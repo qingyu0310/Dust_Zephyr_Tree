@@ -1,0 +1,6 @@
+board:
+  name: stm32f407igh6
+  full_name: Custom STM32F407IGH6 Board
+  vendor: st
+  socs:
+    - name: stm32f407xx

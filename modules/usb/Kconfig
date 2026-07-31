@@ -1,0 +1,17 @@
+# USB 自研协议栈
+# USB 是模块自己的符号，由 project/drivers/Kconfig 的 COM_USB → select USB 拉进
+
+DT_COMPAT_HPM_QINGYUUSB := hpmicro,hpm-qingyuusb
+
+config USB
+    bool
+    default n
+
+if USB
+
+config COM_USB_HAL_HPM
+    bool "HPMicro EHCI"
+    default y
+    depends on DT_HAS_HPMICRO_HPM_QINGYUUSB_ENABLED
+
+endif # USB

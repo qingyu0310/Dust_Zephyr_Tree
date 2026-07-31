@@ -1,0 +1,82 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Custom pinctrl for STM32F407IGH6 (176-pin BGA).
+ *
+ * NOTE: Zephyr does not ship auto-generated pinctrl for the 176-pin
+ * I-package variant. This file was created manually for the blinky
+ * project. Pin configurations listed here are only those that have
+ * been verified on this hardware — not an exhaustive list of all
+ * possible STM32F407IGH6 pin functions.
+ */
+
+#include <dt-bindings/pinctrl/stm32-pinctrl.h>
+
+/ {
+	soc {
+		pinctrl: pin-controller@40020000 {
+
+			/* USART1 */
+			usart1_tx_pa9: usart1_tx_pa9 {
+				pinmux = <STM32_PINMUX('A', 9, AF7)>;
+			};
+			usart1_rx_pa10: usart1_rx_pa10 {
+				pinmux = <STM32_PINMUX('A', 10, AF7)>;
+			};
+			usart1_rx_pb7: usart1_rx_pb7 {
+				pinmux = <STM32_PINMUX('B', 7, AF7)>;
+			};
+
+			/* USART3 */
+			usart3_rx_pc11: usart3_rx_pc11 {
+				pinmux = <STM32_PINMUX('C', 11, AF7)>;
+			};
+			usart3_tx_pb10: usart3_tx_pb10 {
+				pinmux = <STM32_PINMUX('B', 10, AF7)>;
+			};
+			usart3_rx_pb11: usart3_rx_pb11 {
+				pinmux = <STM32_PINMUX('B', 11, AF7)>;
+			};
+
+			/* USART6 */
+			usart6_tx_pg14: usart6_tx_pg14 {
+				pinmux = <STM32_PINMUX('G', 14, AF8)>;
+			};
+			usart6_rx_pg9: usart6_rx_pg9 {
+				pinmux = <STM32_PINMUX('G', 9, AF8)>;
+			};
+			usart6_tx_pc6: usart6_tx_pc6 {
+				pinmux = <STM32_PINMUX('C', 6, AF8)>;
+			};
+			usart6_rx_pc7: usart6_rx_pc7 {
+				pinmux = <STM32_PINMUX('C', 7, AF8)>;
+			};
+
+			/* CAN1 */
+			can1_rx_pa11: can1_rx_pa11 {
+				pinmux = <STM32_PINMUX('A', 11, AF9)>;
+			};
+			can1_tx_pa12: can1_tx_pa12 {
+				pinmux = <STM32_PINMUX('A', 12, AF9)>;
+			};
+			can1_rx_pd0: can1_rx_pd0 {
+				pinmux = <STM32_PINMUX('D', 0, AF9)>;
+			};
+			can1_tx_pd1: can1_tx_pd1 {
+				pinmux = <STM32_PINMUX('D', 1, AF9)>;
+			};
+
+			/* CAN2 */
+			can2_rx_pb5: can2_rx_pb5 {
+				pinmux = <STM32_PINMUX('B', 5, AF9)>;
+			};
+			can2_tx_pb6: can2_tx_pb6 {
+				pinmux = <STM32_PINMUX('B', 6, AF9)>;
+			};
+			can2_tx_pb13: can2_tx_pb13 {
+				pinmux = <STM32_PINMUX('B', 13, AF9)>;
+			};
+
+		};
+	};
+};

@@ -1,0 +1,63 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Custom board definition for STM32F407IGH6 (176-pin BGA).
+ * Created for the blinky robot chassis project.
+ */
+
+/dts-v1/;
+#include <st/f4/stm32f407Xg.dtsi>
+#include "stm32f407igh6-pinctrl.dtsi"
+
+/ {
+	model = "Custom STM32F407IGH6 board";
+	compatible = "st,stm32f407igh6";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,ccm = &ccm0;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		led_alert: led_alert {
+			gpios = <&gpioh 12 GPIO_ACTIVE_LOW>;
+			label = "LED_ALERT";
+		};
+	};
+
+	aliases {
+		led0 = &led_alert;
+	};
+};
+
+&clk_hse {
+	clock-frequency = <DT_FREQ_M(12)>;
+	status = "okay";
+};
+
+&pll {
+	div-m = <6>;
+	mul-n = <168>;
+	div-p = <2>;
+	div-q = <7>;
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
+&rcc {
+	clocks = <&pll>;
+	clock-frequency = <DT_FREQ_M(168)>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <4>;
+	apb2-prescaler = <2>;
+};
+
+&dma1 {
+	status = "okay";
+};
+
+&dma2 {
+	status = "okay";
+};

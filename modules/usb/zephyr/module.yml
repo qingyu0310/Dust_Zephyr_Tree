@@ -1,0 +1,6 @@
+name: user_usb
+build:
+  cmake: .
+  kconfig: Kconfig
+  settings:
+    dts_root: .

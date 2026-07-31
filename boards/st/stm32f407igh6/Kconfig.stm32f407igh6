@@ -1,0 +1,6 @@
+# Copyright (c) 2026 blinky project
+# SPDX-License-Identifier: Apache-2.0
+
+# Custom board for STM32F407IGH6
+config BOARD_STM32F407IGH6
+	select SOC_STM32F407XG

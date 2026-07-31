@@ -1,0 +1,14 @@
+identifier: stm32f407igh6
+name: Custom STM32F407IGH6 Board
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+ram: 128
+flash: 1024
+supported:
+  - can
+  - uart
+  - gpio
+vendor: st

@@ -1,0 +1,7 @@
+description: Winbond W25Q128 SPI NOR Flash
+
+include: [spi-device.yaml]
+
+compatible: "winbond,w25q128"
+
+on-bus: spi
