@@ -1,0 +1,11 @@
+# 平台层 CMSIS 兼容模块 — ARM Cortex-M 支持
+#
+# HAS_CMSIS_CORE 在 zephyr 的 modules/cmsis 与 modules/cmsis_6 Kconfig 中
+# 被 `if 0` 块包裹，依赖为 n；任何 `select HAS_CMSIS_CORE` 都会触发
+# select-with-deps=n 的 Kconfig 错误。
+#
+# 这里在平台层预定义，使依赖解析为 y。该符号仅被 ARM 平台
+# （arch/arm/core、hal_gigadevice/nxp/sifli）select，RISC-V 构建不涉及。
+
+config HAS_CMSIS_CORE
+	bool

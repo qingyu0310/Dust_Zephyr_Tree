@@ -1,7 +1,7 @@
 # zephyr_user — 用户自研层（与 zephyr 同级的小树）
 
 > **SELF-MAINTAINED — qingyu**
-> 这是与 zephyr 同级的用户自研层（`<workspace>/zephyr_user`，workspace 如 `E:\Zephyr_Test`），结构镜像 zephyr（`boards/`、`dts/bindings/`…），
+> 这是与 zephyr 同级的用户自研层（`<workspace>/zephyr_user`，workspace 如 `E:\Zephyr`），结构镜像 zephyr（`boards/`、`dts/bindings/`…），
 > 只包含用户自研的板卡与 binding，**独立 git 仓库管理**，与官方 zephyr 仓库无关。
 
 ## 结构
