@@ -1,0 +1,9 @@
+# 构建产物
+project/build/
+
+# clangd 索引
+project/.cache/
+*.idx
+
+# 其他
+__pycache__/

@@ -1,0 +1,4 @@
+name: user_framework
+build:
+  settings:
+    dts_root: drivers/communication/stream/usb
