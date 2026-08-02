@@ -8,4 +8,4 @@
 # （arch/arm/core、hal_gigadevice/nxp/sifli）select，RISC-V 构建不涉及。
 
 config HAS_CMSIS_CORE
-	bool
+	bool "Enable ARM CMSIS core header"
