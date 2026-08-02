@@ -1,0 +1,11 @@
+# framework/zephyr/Kconfig - user_framework 模块 Kconfig
+# 由 Zephyr 模块机制自动加载（module.yml kconfig: zephyr/Kconfig），业务项目无需手动 rsource。
+# rsource 相对本文件目录（framework/zephyr/），故加 ../ 回到模块根。
+
+rsource "../drivers/Kconfig"
+rsource "../algorithm/Kconfig"
+rsource "../modules/Kconfig"
+rsource "../topic/Kconfig"
+rsource "../cmd/Kconfig"
+rsource "../drivers/communication/stream/usb/Kconfig"
+# 注：init/ 无独立 Kconfig 且始终编译，不 rsource。
