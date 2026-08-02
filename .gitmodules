@@ -16,3 +16,6 @@
 [submodule "framework/init"]
 	path = framework/init
 	url = git@github.com:qingyu0310/Dust_Zephyr_Architecture_Init.git
+[submodule "project"]
+	path = project
+	url = https://github.com/qingyu0310/Dust_Zephyr_Architecture_Project.git

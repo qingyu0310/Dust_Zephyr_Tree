@@ -1,5 +1,6 @@
-project/
 *.idx
 __pycache__/
 temp/
 .clangd
+project/build
+project/.cache
