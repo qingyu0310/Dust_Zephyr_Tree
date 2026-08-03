@@ -71,7 +71,7 @@ jobs:
       - name: Clone HPM official repos
         run: |
           git clone https://github.com/hpmicro/zephyr_sdk_glue.git ${{ github.workspace }}/hpm/zephyr_sdk_glue
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/hpmicro/sdk_env.git ${{ github.workspace }}/hpm/sdk_env
+          git clone --depth 1 --filter=blob:none --sparse --branch v1.11.0 https://github.com/hpmicro/sdk_env.git ${{ github.workspace }}/hpm/sdk_env
           git -C ${{ github.workspace }}/hpm/sdk_env sparse-checkout set hpm_sdk
           git clone https://github.com/cherry-embedded/CherryUSB.git ${{ github.workspace }}/hpm/modules/lib/CherryUSB
 
