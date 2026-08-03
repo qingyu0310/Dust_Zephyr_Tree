@@ -78,7 +78,7 @@ jobs:
       # apply 你的 patch（官方仓库 → 原版 + 你的修复）
       - name: Apply HPM patches
         run: |
-          ${{ github.workspace }}/hpm/Dust_Zephyr_HPMicro_Tree/apply-patches.sh \
+          bash ${{ github.workspace }}/hpm/Dust_Zephyr_HPMicro_Tree/apply-patches.sh \
             --zephyr ${{ github.workspace }}/zephyr \
             --sdk-env ${{ github.workspace }}/hpm/sdk_env \
             --sdk-glue ${{ github.workspace }}/hpm/zephyr_sdk_glue \
