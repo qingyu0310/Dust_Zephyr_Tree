@@ -96,5 +96,6 @@ jobs:
         with:
           name: firmware-hpm5361icb
           path: |
-            ${{ github.workspace }}/zephyr_user/project/build/zephyr/zephyr.{elf,bin,hex,map}
+            ${{ github.workspace }}/zephyr_user/project/build/zephyr/zephyr.elf
+            ${{ github.workspace }}/zephyr_user/project/build/zephyr/zephyr.map
           if-no-files-found: error
