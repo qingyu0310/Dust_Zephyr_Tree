@@ -15,11 +15,11 @@ jobs:
     name: build-hpm5361icb
     runs-on: ubuntu-latest
     env:
-      ZEPHYR_BASE: /work/zephyr
+      ZEPHYR_BASE: ${{ github.workspace }}/zephyr
       ZEPHYR_SDK_INSTALL_DIR: /opt/zephyr-sdk-0.16.8
       ZEPHYR_TOOLCHAIN_VARIANT: zephyr
-      SDK_GLUE_DIR: /work/hpm/zephyr_sdk_glue
-      SDK_GLUE_USER_DIR: /work/hpm/Dust_Zephyr_HPMicro_Tree/sdk_glue_user
+      SDK_GLUE_DIR: ${{ github.workspace }}/hpm/zephyr_sdk_glue
+      SDK_GLUE_USER_DIR: ${{ github.workspace }}/hpm/Dust_Zephyr_HPMicro_Tree/sdk_glue_user
     steps:
       # zephyr 侧主仓库 + 公开子模块（免 token）
       - uses: actions/checkout@v4
@@ -57,37 +57,37 @@ jobs:
             sudo tar -xJ -C /opt
           sudo /opt/zephyr-sdk-0.16.8/setup.sh -t riscv64-zephyr-elf -c
 
-      # west + zephyr 树 + west 模块
+      # west + zephyr 树 + west 模块（全部在工作区，runner 可写）
       - name: Setup west workspace
         run: |
           python3 -m pip install west
-          git clone --depth 1 --branch v4.3.0 https://github.com/zephyrproject-rtos/zephyr.git /work/zephyr
-          mkdir -p /work/.west
-          printf '[manifest]\npath = zephyr\nfile = west.yml\n' > /work/.west/config
-          cd /work/zephyr && python3 -m pip install -r scripts/requirements.txt
+          git clone --depth 1 --branch v4.3.0 https://github.com/zephyrproject-rtos/zephyr.git ${{ github.workspace }}/zephyr
+          mkdir -p ${{ github.workspace }}/.west
+          printf '[manifest]\npath = zephyr\nfile = west.yml\n' > ${{ github.workspace }}/.west/config
+          cd ${{ github.workspace }}/zephyr && python3 -m pip install -r scripts/requirements.txt
           west update
 
       # HPM 官方仓库（sdk_env 只 sparse 拉 hpm_sdk）
       - name: Clone HPM official repos
         run: |
-          git clone https://github.com/hpmicro/zephyr_sdk_glue.git /work/hpm/zephyr_sdk_glue
-          git clone --depth 1 --filter=blob:none --sparse https://github.com/hpmicro/sdk_env.git /work/hpm/sdk_env
-          git -C /work/hpm/sdk_env sparse-checkout set hpm_sdk
-          git clone https://github.com/cherry-embedded/CherryUSB.git /work/hpm/modules/lib/CherryUSB
+          git clone https://github.com/hpmicro/zephyr_sdk_glue.git ${{ github.workspace }}/hpm/zephyr_sdk_glue
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/hpmicro/sdk_env.git ${{ github.workspace }}/hpm/sdk_env
+          git -C ${{ github.workspace }}/hpm/sdk_env sparse-checkout set hpm_sdk
+          git clone https://github.com/cherry-embedded/CherryUSB.git ${{ github.workspace }}/hpm/modules/lib/CherryUSB
 
       # apply 你的 patch（官方仓库 → 原版 + 你的修复）
       - name: Apply HPM patches
         run: |
-          /work/hpm/Dust_Zephyr_HPMicro_Tree/apply-patches.sh \
-            --zephyr /work/zephyr \
-            --sdk-env /work/hpm/sdk_env \
-            --sdk-glue /work/hpm/zephyr_sdk_glue \
-            --cherryusb /work/hpm/modules/lib/CherryUSB
+          ${{ github.workspace }}/hpm/Dust_Zephyr_HPMicro_Tree/apply-patches.sh \
+            --zephyr ${{ github.workspace }}/zephyr \
+            --sdk-env ${{ github.workspace }}/hpm/sdk_env \
+            --sdk-glue ${{ github.workspace }}/hpm/zephyr_sdk_glue \
+            --cherryusb ${{ github.workspace }}/hpm/modules/lib/CherryUSB
 
       # 构建 hpm5361icb
       - name: Build hpm5361icb
         run: |
-          cd /work/zephyr_user/project
+          cd ${{ github.workspace }}/zephyr_user/project
           west build -p always -b hpm5361icb -- -DBOARD_CFG=hpm5361icb
 
       # 产物
@@ -96,5 +96,5 @@ jobs:
         with:
           name: firmware-hpm5361icb
           path: |
-            /work/zephyr_user/project/build/zephyr/zephyr.{elf,bin,hex,map}
+            ${{ github.workspace }}/zephyr_user/project/build/zephyr/zephyr.{elf,bin,hex,map}
           if-no-files-found: error
