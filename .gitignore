@@ -4,3 +4,4 @@ temp/
 .clangd
 project/build
 project/.cache
+.vscode

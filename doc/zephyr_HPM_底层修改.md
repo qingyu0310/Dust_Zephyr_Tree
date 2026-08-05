@@ -1,10 +1,13 @@
 # Zephyr HPM SDK 底层修改详解
 
-> 承接《[zephyr_HPM_搭建指南.md](./zephyr_HPM_搭建指南.md)》第 7 章。那一章只列了"有哪些底层 bug、
-> 放到最后做"；这一篇把**每个修改改哪个文件、为什么、贴什么代码**讲全，照着复制即可。
+> **2026-08-03 更新：本文件全部修改已 patch 化，不再手动改官方文件。**
+> 37 处修改（zephyr / sdk_env / sdk_glue / cherryusb 4 个官方仓库）已归档到
+> `Dust_Zephyr_HPMicro_Tree/zephyr-patches/`（10 个 patch），用 `apply-patches.sh` 一键应用。
+> 使用方式见《[zephyr_HPM_搭建指南.md](./zephyr_HPM_搭建指南.md)》第 7 章；
+> CI 已自动完成 clone 官方 → apply → 编译验证（《zephyr_CI_CD_规划.md》M0/M1）。
 >
-> **建议顺序**：先把《搭建指南》第 4/5 章的编译必需链做完、`dust build hpm5361icb` 出固件 → 再逐项
-> 应用下面的修改 → 增量编译 → 烧录验证。**每个修改都标了所属仓库，别改错地方。**
+> 本文件保留每个修改的**病因解释与改前/改后代码**，用途：理解"为什么这么改"、排查运行时行为、
+> 以及官方仓库升级后重新生成 patch 时对照。**照做时请用 apply-patches.sh，不要手动复制本文件代码。**
 
 ---
 
