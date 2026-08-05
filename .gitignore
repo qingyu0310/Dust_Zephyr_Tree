@@ -5,3 +5,5 @@ temp/
 project/build
 project/.cache
 .vscode
+.claude
+scripts
