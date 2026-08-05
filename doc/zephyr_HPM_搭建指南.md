@@ -312,28 +312,32 @@ dust build hpm5361icb
 
 ---
 
-## 7. 底层 bug 修复（放到最后做）
+## 7. 底层 bug 修复（已 patch 化，一键应用）
 
-**为什么放最后**：这些全是"改官方文件 / 底层行为"的运行时稳定性修复。它们**不进入编译必需链**——
-不动 Kconfig/CMake/dtsi，也不缺符号，`west build` 结果与不修完全一致。只有固件烧到板子上、
-外设真正跑起来才暴露。所以顺序是：**先拿绿 build → 烧进去看基本启动 → 再逐项补这些**。
+**现状（2026-08-03）**：下表全部底层修改已 **patch 化**，归档在
+`Dust_Zephyr_HPMicro_Tree/zephyr-patches/`（10 个 patch，覆盖 zephyr/sdk_env/sdk_glue/cherryusb
+共 37 处修改），由 `apply-patches.sh` 一键应用。**不再需要手动改官方文件。**
+CI 已自动完成 clone 官方 → apply patch → 编译验证（见《zephyr_CI_CD_规划.md》M0/M1）。
 
-| # | 修改 | 位置 | 影响 |
+| # | 修改 | 位置 | 影响（为什么） |
 | --- | --- | --- | --- |
-| 1 | **intc_plic 补丁** | `zephyr/drivers/interrupt_controller/intc_plic.c` | RISC-V PLIC 伪中断未 acknowledge → 中断风暴/卡死，USB/GPIO 中断丢失 |
-| 2 | **hpm_misc 补丁** | `sdk_env/hpm_sdk/soc/HPM5300/HPM5361/hpm_misc.h` | HPM5361 缺 DLM/ILM↔system 地址换算 → DMA/USB 缓冲访问 core-local 内存地址错 |
-| 3 | **uart_hpmicro RX idle** | `sdk_glue/drivers/serial/uart_hpmicro.c` | HPM5361 需硬件 RX idle + async 自动拉起 IRQ/DMA，否则 UART+DMA 收发不稳定 |
-| 4 | **外设驱动运行时修正** | `sdk_glue/drivers/{can,gpio,pwm,spi,flash,...}` | 各外设使能时才暴露的行为修复 |
-| 5 | **CherryUSB array-size** | `modules/lib/CherryUSB/osal/usb_osal_zephyr.c` | 当前工程用自研 USB 栈，CherryUSB 不参与编译，可后置或不做 |
+| 1 | intc_plic 补丁 | `zephyr/drivers/interrupt_controller/intc_plic.c` | RISC-V PLIC 伪中断未 acknowledge → 中断风暴/卡死，USB/GPIO 中断丢失 |
+| 2 | hpm_misc 补丁 | `sdk_env/hpm_sdk/soc/HPM5300/HPM5361/hpm_misc.h` | HPM5361 缺 DLM/ILM↔system 地址换算 → DMA/USB 缓冲访问 core-local 内存地址错 |
+| 3 | uart_hpmicro RX idle | `sdk_glue/drivers/serial/uart_hpmicro.c` | HPM5361 需硬件 RX idle + async 自动拉起 IRQ/DMA，否则 UART+DMA 收发不稳定 |
+| 4 | 外设驱动运行时修正 | `sdk_glue/drivers/{can,gpio,pwm,spi,flash,...}` | 各外设使能时才暴露的行为修复 |
+| 5 | CherryUSB array-size | `modules/lib/CherryUSB/osal/usb_osal_zephyr.c` | ARRAY_SIZE 宏冲突（-Werror 下编译失败） |
 
-> 注意：`0002`/`0005`（sdk_glue 工作区修改）是**混合的**——里面 **udc 驱动的 v4.3 API 迁移**属于
-> 编译必需（旧签名 `udc_ep_set_busy(dev,...)` 在 v4.3 已不存在），必须在编译前做；但里面的
-> **uart/pwm 行为增强**属于运行时件，可后置。
+**如何使用**：
+1. clone 官方 4 仓库：zephyr v4.3.0 / `sdk_env v1.11.0`（sparse 只拉 hpm_sdk）/ sdk_glue / CherryUSB
+2. 跑 `apply-patches.sh --zephyr <z> --sdk-env <e> --sdk-glue <g> --cherryusb <c>`
+3. `west build -b hpm5361icb` 编译验证
+4. 烧录验证各外设行为
 
-**建议流程**：
-1. 按第 4、5 章搭好编译必需链 → `west build -b hpm5361icb` 出固件
-2. 烧进去验证基本启动（打印/点灯）
-3. 再逐项 apply 上表补丁 → 增量编译 → 烧录验证每个外设
+**注意**：下表修改里有部分是**编译必需**的（如 sdk_glue 的 udc v4.3 API 迁移——旧签名
+`udc_ep_set_busy(dev,...)` 在 v4.3 已不存在），patch 必须在编译前 apply；其余是运行时修复。
+CI 每次先 apply 再编译，两者都覆盖。
+
+> 病因细节与改前/改后代码见《zephyr_HPM_底层修改.md》（已 patch 化，无需手动改，供理解为什么）。
 
 ---
 
