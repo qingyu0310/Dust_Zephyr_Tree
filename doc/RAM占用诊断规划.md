@@ -6,12 +6,12 @@
 
 | 区域 | 使用 | 总大小 | 占用率 |
 |------|------|--------|--------|
-| ROM | 161476 B | 1 MB | 15.40% |
-| **RAM** | **109828 B** | **128 KB** | **83.79%** |
+| ROM | 161616 B | 1 MB | 15.41% |
+| **RAM** | **70940 B** | **128 KB** | **54.12%** |
 | ITCM | 1838 B | 128 KB | 1.40% |
 | AHB_SRAM | 2560 B | 32 KB | 7.81% |
 
-目标：压到 <75%（省 ~12 KB）。
+目标：压到 <75% —— **已达成**。优化前 109828B/83.79% → 70940B/54.12%，**累计省 38888 B ≈ 38 KB**。
 
 ## 二、占用归因（实验依据：`nm --size-sort` 实测 zephyr.elf + 源码审读 + Zephyr 内核源码）
 
@@ -62,39 +62,61 @@
 
 **全工程数据符号扫描结论**：除线程栈对象外，**没有其他 >2.5KB 的大数组**。RAM 大头 = 线程栈类（~50KB，含 PMP guard ~12KB）+ USB DCD（10KB）+ 系统堆（8KB）+ MCAN（12.5KB）。
 
+### 2.5 栈检测实测与降档（2026-08-07 已执行）
+
+**检测方法**：`CONFIG_INIT_STACKS` 0xA5 填充 + 各线程循环 `k_thread_stack_space_get` 打最低 free。0xA5 用过不回填，最低 free = **历史峰值**（比瞬时值可信）。
+
+| 线程 | 原栈 | 实测最低 free | 峰值使用 | 新栈 | 余量 |
+|------|------|-------------|---------|------|------|
+| main | 8192 | 6960* | ~2256 | **3072** | 1792 |
+| imu | 4096 | 2448 | 1648 | **2048** | 400 |
+| remote | 5120 | 3952 | 1168 | **2048** | 880 |
+| gpio(output) | 2048 | 992（含检测块） | <300 | **1024** | ~700 |
+| shell | 2048 | 880（var list 后） | 1168 | 2048（保持） | 880 |
+| pc / test / can | 2048/2048/1024 | — | — | 未测 | — |
+
+\* main 原 8192 时最低 free 6960（RunStage 内每阶段打）；降 3072 后 free 1792。
+
+**guard 减半**（P1 的折中方案，非全关）：`CONFIG_PMP_STACK_GUARD_MIN_SIZE` 512→256，guard = `POW2_CEIL(esf~80 + 256)` = **512**（原 1024）。每栈省 512B × ~12 栈 ≈ **6 KB**。保护保留（进入即 fault），异常压栈空间 432B。详见 §3.1。
+
+**配套：fatal handler**（排查中发现的输出黑洞）——`CONFIG_LOG`/`CONFIG_CONSOLE` 关闭导致 Zephyr fatal 输出被吞（LOG_ERR no-op + printk 无后端），栈溢出不可见。新增 [framework/cmd/fatal/fatal.cpp](framework/cmd/fatal/fatal.cpp) override `k_sys_fatal_error_handler`，用 DUST_LOG 上报 reason/mcause/mepc，无条件编译（无 Kconfig 门禁，防呆）。
+
 ## 三、优化方案（按优先级）
 
-### P0：系统堆 8 KB → 0（零风险，纯 Kconfig）
-- **依据**：grep `k_malloc`/`k_heap`/`K_HEAP` 在 framework/ project/ **零命中**；zbus 通道用静态 msgq 不占堆。
-- **改动**：`project/prj.conf:29` `CONFIG_HEAP_MEM_POOL_SIZE=8192` → `0`（若编译/运行报缺堆再降回 2048）。
-- **省**：8 KB。**风险**：无（用户代码不碰堆）。
+> **2026-08-07 执行状态**：P0 系统堆 8192→2048 / P1 guard 减半（非全关）/ P2 主栈 3072 / P3 imu·remote·gpio 降档 / P5 USB（QTD 8→2 + 缓冲 512→256）已执行；P4 CAN 未做。
 
-### P1：PMP_STACK_GUARD 评估（~12 KB，需用户权衡安全）
+### P0：系统堆 8 KB → 2048（已执行，变体：非归零）
+- **依据**：grep `k_malloc`/`k_heap`/`K_HEAP` 在 framework/ project/ **零命中**；zbus 通道用静态 msgq 不占堆（`HEAP_MEM_POOL_ADD_SIZE_ZBUS=0`）。
+- **改动**：`prj.conf` `CONFIG_HEAP_MEM_POOL_SIZE=8192` → `2048`（用户拍板留 2KB 保险，不归零；覆盖板级默认 [hpm5361icb/Kconfig.defconfig:6-7](E:/Zephyr_HPMicro/sdk_glue_user/boards/hpmicro/hpm5361icb/Kconfig.defconfig#L6-L7)）。
+- **省**：6 KB。**风险**：低（用户代码不碰堆；若某子系统运行时缺堆再降回）。
+
+### P1：PMP_STACK_GUARD 评估（~12 KB，需用户权衡安全）——**已执行（减半方案）**
 - **依据**：每栈 +1KB guard，~12 个栈 ≈ 12KB（§2.1 实测验证）。
-- **改动**：`.config` 关 `CONFIG_PMP_STACK_GUARD`（连带 `CONFIG_HW_STACK_PROTECTION` 关闭，[.config:94](e:/Zephyr/zephyr_user/project/build/zephyr/.config#L94)）。
-- **省**：~12 KB（每栈 1KB，主栈/中断/idle/work_q/8 个业务栈）。
-- **风险**：**失去栈溢出即时保护**——溢出不再触发 fault 而是静默破坏内存。权衡：配合"栈检测实验"把各栈降到真实峰值×1.5 后，溢出概率大幅下降，可接受与否由用户拍板。
+- **改动**：`CONFIG_PMP_STACK_GUARD_MIN_SIZE` 512 → 256，guard = `POW2_CEIL(esf~80 + 256)` = **512**（[riscv/arch.h:51-53](E:/Zephyr/zephyr/include/zephyr/arch/riscv/arch.h#L51-L53)）。**不关保护**（全关 = 溢出静默破坏内存；fatal handler 已补上溢出可见性）。
+- **省**：~6 KB（每栈 512B × ~12 栈）。
+- **风险**：guard 减半，检测窗口缩短、异常压栈空间 1024→512（432B，够 ~6 层嵌套中断）。保护机制不变（进入即 fault）。
 
-### P2：主栈 9 KB → 4096（先测后降）
-- **依据**：`main()` 只调 `System_Startup()`，调用链 = 各 `thread_init` 序列，峰值预期 <2 KB。
-- **改动**：`prj.conf:20` `CONFIG_MAIN_STACK_SIZE=8192` → `4096`。
-- **省**：~5 KB（实际 9216→5120，含 guard）。**风险**：低。
+### P2：主栈 9 KB → 3072（已执行）
+- **依据**：`main()` 只调 `System_Startup()`，调用链 = 各 `thread_init` 序列，实测峰值 ~2.3KB。
+- **改动**：`prj.conf` `CONFIG_MAIN_STACK_SIZE=8192` → `3072`（用户拍板，比 4096 更省）。
+- **省**：~5 KB（实际 9216→4096，含 guard 512）。**风险**：低，降后 free 1792B。
 
-### P3：线程栈峰值实测降档（需要 §四 栈检测实验）
+### P3：线程栈峰值实测降档（已部分执行）
 - **对象**：remote(5120)、imu(4096)、chassis(4096)、shell/gpio×2/pc/test(2048)、can(1024)。
-- **依据**：栈是 RAM 最大可控项；当前配置偏保守，需实测峰值再降。
-- **改动**：按 §四 数据，把 `Thread<StackSize>` 降到 `峰值 × 1.5`（留余量）。
-- **省**：视实测，remote/imu/chassis 若峰值 1-2K 可各降 2-3K，合计 ~8-10K。
-- **风险**：低（有实验依据）。
+- **依据**：栈是 RAM 最大可控项；实测峰值远低于配置（§2.5）。
+- **改动（已做）**：imu 4096→**2048**、remote 5120→**2048**、gpio(output) 2048→**1024**；shell 实测峰值 1168 保持 2048；chassis/pc/test/can **未测未降**。
+- **省**：已降部分 ≈ 1+2+3 KB ≈ **6 KB**。
+- **风险**：低（有实验依据）；gpio 1024 装不下 DUST_LOG 直打（~528B+），后续加日志须升回。
 
 ### P4：关第二路 CAN（~5 KB，条件项）
 - **依据**：`hpm_mcan_data` 每路 5 KB + msg_buf 2.5 KB。若只用一路 CAN 可关。
 - **省**：~5 KB。**风险**：取决于是否用第二路。
 
-### P5：USB DCD 10 KB（最大单项，硬成本）
-- **结论已查实**：`dcd_data_t` = QHD 2K + QTD 8K = 10KB；2048 对齐无损；必须 RAM 可写。
-- **选项**：① 暂不用 USB → 关 `DUST_COM_USB` 省 ~14 KB；② 缩 `USB_SOC_DCD_QTD_COUNT_EACH_ENDPOINT`（8→2，省 6KB，动 HPM SDK soc 头）。
-- **建议**：不作首选项；USB 测试完可关。
+### P5：USB DCD 10 KB（最大单项，硬成本）——**已部分执行**
+- **结论已查实**：`dcd_data_t` = QHD 2K + QTD 8K = 10KB；2048 对齐无损；必须 RAM 可写（USB 控制器 DMA 回写，flash 不可行）。
+- **已做（QTD 8→2）**：board.cmake `add_compile_definitions(USB_SOC_DCD_QTD_COUNT_EACH_ENDPOINT=2)`，利用 [hpm_soc_feature.h:93](E:/Zephyr_HPMicro/sdk_env/hpm_sdk/soc/HPM5300/HPM5361/hpm_soc_feature.h#L93) 的 `#ifndef` 覆盖，**不改官方 SDK**。QTD 256→64 个（8K→2K），**省 6KB**。CDC 单发单收，每端点 2 深够。
+- **已做（收发缓冲 512→256）**：`s_rx_buf[2][512]`/`s_tx_buf[512]` → 256（`UsbHal::kTxBufSize/kRxBufSize` 常量，抽象层定义，hal 数组与上层单次发送上限共用），**省 768B**。单次发送上限 512→256（工况冗余充足）。
+- **未做**：关 USB 整段移除（省 ~14KB）。
 
 ## 四、栈使用检测实验（P2/P3 的前置）
 
@@ -133,23 +155,23 @@ if (now - s_last_ms >= 5000) {
 
 | 阶段 | 内容 | 验证 |
 |------|------|------|
-| 阶段 0 | 栈检测实验（§四）：开 INIT_STACKS + 加打印 | 烧录 30s 收集各栈峰值表 |
-| 阶段 1 | 系统堆 8192→0（P0） | 编译 + 烧录启动正常 |
-| 阶段 2 | 评估 PMP_STACK_GUARD（P1）——由用户权衡关/留 | 若关，烧录确认无异常 |
-| 阶段 3 | 按峰值降主栈 + 各线程栈（P2/P3） | 编译 + 烧录 30s 复测无溢出 |
-| 阶段 4 | 评估关第二路 CAN（P4）/ USB（P5） | 按实际需求决定 |
-| 阶段 5 | 终验：RAM 占用复查 + 全功能回归 | RAM < 75%，功能完整 |
+| 阶段 0 | 栈检测实验（§四）：开 INIT_STACKS + 加打印 | ✅ 烧录采集各栈峰值表 |
+| 阶段 1 | 系统堆 8192→2048（P0） | ✅ 已做（留 2KB 保险） |
+| 阶段 2 | 评估 PMP_STACK_GUARD（P1） | ✅ 减半方案：MIN_SIZE 512→256 → guard 512，省 ~6KB |
+| 阶段 3 | 按峰值降主栈 + 各线程栈（P2/P3） | ✅ main 3072 / imu 2048 / remote 2048 / gpio 1024 |
+| 阶段 4 | 评估关第二路 CAN（P4）/ USB（P5） | ⬜ 未做 |
+| 阶段 5 | 终验：RAM 占用复查 + 全功能回归 | ✅ RAM 65.45% < 75% |
 
 ## 六、执行清单
 
-- [ ] 1. `prj.conf` 加 `CONFIG_INIT_STACKS=y` + `CONFIG_THREAD_STACK_INFO=y`（栈使用率检测开启）
-- [ ] 2. 各线程 Task 加栈余量周期打印（remote/imu/chassis/shell/gpio/pc/test/can）
-- [ ] 3. `System_Startup` 末尾打主栈余量
-- [ ] 4. 烧录跑 30s 典型工况，记录各线程最低 free
-- [ ] 5. `prj.conf` `CONFIG_HEAP_MEM_POOL_SIZE=8192` → `0`（P0）
-- [ ] 6. **PMP_STACK_GUARD 关/留由用户拍板**（P1，省 ~12KB）
-- [ ] 7. 按 `峰值×1.5` 定档，降 `CONFIG_MAIN_STACK_SIZE` 和各 `Thread<StackSize>`
-- [ ] 8. 删除临时栈打印代码，编译烧录
-- [ ] 9. 30s 复测确认无栈溢出、功能正常
-- [ ] 10. 评估 P4（关第二路 CAN）/ P5（USB）
-- [ ] 11. 终验：RAM 占用率复查（目标 <75%）
+- [x] 1. `prj.conf` 加 `CONFIG_INIT_STACKS=y` + `CONFIG_THREAD_STACK_INFO=y`（栈使用率检测开启）
+- [x] 2. 各线程 Task 加栈余量周期打印（main/imu/remote/gpio/shell 已测；pc/test/can 未测）
+- [x] 3. `System_Startup` 末尾打主栈余量
+- [x] 4. 烧录跑典型工况，记录各线程最低 free
+- [x] 5. `prj.conf` `CONFIG_HEAP_MEM_POOL_SIZE=8192` → `2048`（P0 变体，留 2KB 保险）
+- [x] 6. PMP_STACK_GUARD 评估 → **减半方案已做**（MIN_SIZE 256，guard 512，省 ~6KB）
+- [x] 7. 降档：main 3072 / imu 2048 / remote 2048 / gpio 1024；shell 保持 2048
+- [x] 8. 删除临时栈打印代码
+- [x] 9. 复测确认无栈溢出（main/imu/remote/gpio/shell）
+- [x] 10. P5 USB 已做（QTD 8→2 + 缓冲 512→256）；P4 关第二路 CAN 未做
+- [x] 11. 终验：RAM 占用率 **65.45%**（目标 <75% 已达成）
