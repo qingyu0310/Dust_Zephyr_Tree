@@ -1,0 +1,28 @@
+description: STM32 FSMC 8080 LCD 控制器（Bank4，16 位数据）
+
+compatible: "st,fsmc-lcd"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  bank:
+    type: int
+    required: true
+  data-width:
+    type: int
+    required: true
+  read-addr-setup-cycles:
+    type: int
+    required: true
+  read-data-setup-cycles:
+    type: int
+    required: true
+  write-addr-setup-cycles:
+    type: int
+    required: true
+  write-data-setup-cycles:
+    type: int
+    required: true
+  backlight-gpios:
+    type: phandle-array
+    required: true
