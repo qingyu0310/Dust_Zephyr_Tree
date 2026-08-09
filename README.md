@@ -12,6 +12,7 @@ zephyr_user/
 ├── boards/      用户自研板卡（zephyr 树没有的板卡，如 stm32f407igh6）
 ├── dts/         用户自研 devicetree binding
 ├── doc/         架构文档
+├── drivers/     子树驱动层（本仓库板卡底层驱动，Zephyr 模块式）
 ├── framework/   架构子模块（使用者不允许修改）
 ├── platform/    平台中间层支持
 └── project/     维护者业务层工作区
@@ -29,7 +30,19 @@ zephyr_user/
 ### dts
 
 放置用户自研的 devicetree binding（compatible → schema 校验）。例如
-`dts/bindings/mtd/winbond,w25q128.yaml`（上游 zephyr 没有的 W25Q128 SPI NOR Flash 型号）。
+`dts/bindings/mtd/winbond,w25q128.yaml`（上游 zephyr 没有的 W25Q128 SPI NOR Flash 型号）、
+`dts/bindings/usb/hpmicro,hpm-dustusb.yaml`（自研 HPM USB 控制器）。
+
+### drivers
+
+**子树驱动层**：本仓库自己的底层驱动，按 Zephyr 官方驱动模型写（`zephyr/module.yml` + Kconfig +
+devicetree 设备模型注册），与 `zephyr/drivers/` 同构。放 Zephyr 树没有的板卡专属底层控制器驱动：
+
+- `drivers/fsmc/` — STM32 FSMC 8080 LCD 控制器（`st,fsmc-lcd`）
+- `drivers/usb/hal/hpm/` — USB 板卡底层 HAL（`UsbHalHpm`，HPM EHCI）
+
+与 `framework/drivers`（架构驱动层，C++ 外设封装）的分工：**架构 drivers 封装通用外设对象**，
+**子树 drivers 放板卡专属底层驱动**。换板卡只动这里，架构层稳定。
 
 ### doc
 
@@ -145,7 +158,7 @@ aliases {
     imu-pwm     = &imu_pwm;
     buzzer-pwm  = &buzzer_pwm;
     flash-spi   = &w25q128;
-    pc-usb      = &qingyuusb_usb0;
+    pc-usb      = &dustusb_usb0;
 };
 ```
 

@@ -1,0 +1,17 @@
+description: HPMicro DustUSB Controller (self-implemented stack)
+
+compatible: "hpmicro,hpm-dustusb"
+
+include: ["usb-ep.yaml", "pinctrl-device.yaml"]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clk-name:
+    type: int
+    required: true
+    description: USB clock name

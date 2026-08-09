@@ -1,5 +1,3 @@
 name: user_framework
 build:
   kconfig: zephyr/Kconfig
-  settings:
-    dts_root: drivers/communication/stream/usb
