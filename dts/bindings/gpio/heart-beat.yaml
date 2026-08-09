@@ -1,0 +1,10 @@
+description: Heart beat indicator (GPIO output toggle)
+
+compatible: "heart-beat"
+
+include: [base.yaml]
+
+properties:
+  gpios:
+    type: phandle-array
+    required: true

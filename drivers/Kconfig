@@ -1,0 +1,11 @@
+config DUST_DEV_FSMC
+    bool "STM32 FSMC LCD controller (HX8357DN 8080)"
+    default n
+    help
+      FSMC 底层设备驱动：读 lcd_fsmc 节点时序/背光属性，配置 Bank 寄存器。
+
+config DUST_DEV_FSMC_INIT_PRIORITY
+    int "FSMC init priority"
+    default 40
+    help
+      FSMC 设备初始化优先级（POST_KERNEL 阶段，需早于 LCD 业务线程）。
