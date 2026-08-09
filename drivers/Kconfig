@@ -9,3 +9,8 @@ config DUST_DEV_FSMC_INIT_PRIORITY
     default 40
     help
       FSMC 设备初始化优先级（POST_KERNEL 阶段，需早于 LCD 业务线程）。
+
+# USB 板卡底层 HAL（2026-08-09 从 framework/drivers/communication/stream/usb 下沉）
+config DUST_USB_DEVICE_HAL_HPM
+    bool "HPMicro EHCI USB HAL"
+    default n
