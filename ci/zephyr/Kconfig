@@ -1,0 +1,9 @@
+# framework 聚合 Kconfig（CI 骨架用）
+# 与 framework/zephyr/Kconfig 同构；rsource 相对 ci/zephyr/
+rsource "../../framework/drivers/Kconfig"
+rsource "../../framework/algorithm/Kconfig"
+rsource "../../framework/modules/Kconfig"
+rsource "../../framework/topic/Kconfig"
+rsource "../../framework/cmd/Kconfig"
+rsource "../../framework/drivers/communication/stream/usb/Kconfig"
+# init 无独立 Kconfig 且始终编译，不 rsource
