@@ -14,6 +14,9 @@
 
 #include "log.hpp"
 
+#include <zephyr/kernel.h>
+#include <zephyr/irq.h>
+
 #include <hpm_soc.h>
 #include <hpm_clock_drv.h>
 #include <hpm_usb_drv.h>

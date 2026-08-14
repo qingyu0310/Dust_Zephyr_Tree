@@ -1,0 +1,35 @@
+# Copyright (c) 2026, qingyu
+# SPDX-License-Identifier: Apache-2.0
+
+description: STM32 OTGFS controller (self-implemented stack)
+
+compatible: "st,st-dustusb"
+
+include: [usb-ep.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  pinctrl-0:
+    required: true
+
+  pinctrl-names:
+    required: true
+
+  ram-size:
+    type: int
+    required: true
+    description: |
+      Size of USB dedicated RAM. STM32 SOC's reference
+      manual defines a shared FIFO size.
+
+  phys:
+    type: phandle
+    description: PHY provider specifier
+
+  clocks:
+    required: true

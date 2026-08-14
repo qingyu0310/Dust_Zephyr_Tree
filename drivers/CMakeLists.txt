@@ -19,3 +19,12 @@ if(CONFIG_DUST_USB_DEVICE_HAL_HPM)
         ${SDK_GLUE_DIR}/../sdk_env/hpm_sdk/components/usb/device
         ${SDK_GLUE_DIR}/../sdk_env/hpm_sdk/drivers/inc)
 endif()
+
+# USB 板卡底层 HAL（STM32 OTG FS，2026-08-13）
+if(CONFIG_DUST_USB_DEVICE_HAL_STM32)
+    target_sources(app PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/usb/hal/stm32/usb_hal_stm32.cpp)
+    target_include_directories(app PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/usb/hal/stm32
+        ${FW_ROOT}/drivers/communication/stream/usb/interface)
+endif()
