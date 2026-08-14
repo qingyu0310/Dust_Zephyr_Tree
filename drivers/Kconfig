@@ -14,3 +14,14 @@ config DUST_DEV_FSMC_INIT_PRIORITY
 config DUST_USB_DEVICE_HAL_HPM
     bool "HPMicro EHCI USB HAL"
     default n
+
+config DUST_USB_DEVICE_HAL_STM32
+    bool "STM32 OTG FS USB HAL"
+    default n
+    select USE_STM32_HAL_PCD
+    select USE_STM32_HAL_PCD_EX
+    select USE_STM32_LL_USB
+    help
+      STM32F407 OTG FS 板卡底层 HAL（参考 STM32Cube USB_DEVICE CDC 设置，2026-08-13）。
+      select USE_STM32_HAL_PCD* 触发 hal_stm32 模块编译 stm32f4xx_hal_pcd{,_ex}.c；
+      USE_STM32_LL_USB 编译 stm32f4xx_ll_usb.c（HAL_PCD 依赖的 USB_* 底层函数）。

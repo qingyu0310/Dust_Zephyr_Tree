@@ -15,7 +15,7 @@ zephyr_user/
 ├── drivers/     子树驱动层（本仓库板卡底层驱动，Zephyr 模块式）
 ├── framework/   架构子模块（使用者不允许修改）
 ├── platform/    平台中间层支持
-└── project/     维护者业务层工作区
+└── project/     维护者验证工作区（只验证 framework 六模块可用性）
 ```
 
 ---
@@ -66,8 +66,10 @@ devicetree 设备模型注册），与 `zephyr/drivers/` 同构。放 Zephyr 树
 
 ### project
 
-**维护者业务层工作区**。维护者需要一个能查看/验证所有子树内容的工作环境，因此把它放进子树；
-新成员也可先在这里过渡，熟悉架构后再转到自己的使用者工作区。
+**维护者验证工作区**。主干 `project/` **只专注验证 framework 六模块（algorithm/cmd/drivers/init/
+modules/topic）是否能够使用**——验证它们的编译/装配/运行，**不专注任何业务线程**。业务线程全部在
+使用者工作区（`projects/<user>/project/thread/`）编写；主干只保留 gpio 心跳 + test 测试作为验证
+六模块的工具，设备树 overlay 每次只加验证当前需要的外设、用完即删。
 
 ---
 
@@ -78,23 +80,29 @@ devicetree 设备模型注册），与 `zephyr/drivers/` 同构。放 Zephyr 树
 
 ---
 
-## 4. project 的两种身份
+## 4. project 的身份
 
-- **维护者工作区**：验证所有子树内容。
-- **成员模板**：新成员先在 `project` 过渡，熟悉架构子模块用法，后期转向自己的使用者工作区。
+- **维护者工作区**：验证 framework 六模块可用性（编译/装配/运行），**不承载业务线程**。
+- 使用者工作区以 `projects/qingyu` 为范本（`template` 已对齐），新成员复制用户区模板开自己的工作区，
+  不在主干 `project/` 写业务线程。
 
 ---
 
 ## 5. 成员工作区必备内容
 
-`project/` 下的内容是每个成员工作区都**必须**有的：
+用户工作区（`projects/<user>`）以 `projects/qingyu` 为范本（`template` 已对齐）：**用户区根平铺
+framework 六模块 + `project/`**，与架构层六模块共存不冲突。
 
 ```text
-CMakeLists.txt    ← 构建装配（引入 framework + platform/cmsis）
-Kconfig           ← 业务开关（select DUST_*）
-prj.conf          ← 通用配置
-boards/           ← 板卡配置
-thread/           ← 业务线程
+<user>/           ← 用户工作区根
+├── algorithm/ cmd/ drivers/     ← 用户层六模块（跟架构对齐，空目录跳过）
+│   init/ modules/ topic/
+└── project/      ← 业务工程（业务线程都在这里）
+    ├── CMakeLists.txt    ← 构建装配（FW_ROOT 架构层六模块 + 用户层六模块 + project）
+    ├── Kconfig           ← 业务开关（select DUST_*）
+    ├── prj.conf          ← 通用配置
+    ├── boards/           ← 板卡配置
+    └── thread/           ← 业务线程
 ```
 
 ### 配置规范（通用 vs 板卡）
