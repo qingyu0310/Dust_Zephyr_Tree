@@ -1,3 +1,0 @@
-name: dust_framework_ci
-build:
-  kconfig: zephyr/Kconfig
