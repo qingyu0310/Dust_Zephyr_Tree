@@ -11,9 +11,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-hpm5361icb:
-    name: build-hpm5361icb
+  build:
+    # name 用厂家通用名 → check 名 build-hpm / build-st，不绑定具体板卡
+    name: build-${{ matrix.vendor }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # 一块板失败不取消其他
+      matrix:
+        include:
+          - board: hpm5361icb
+            cfg: hpm5361icb
+            vendor: hpm
+            sdk_target: riscv64-zephyr-elf
+            need_hpm: true
+          - board: stm32f4_disco
+            cfg: puzhong
+            vendor: st
+            sdk_target: arm-zephyr-eabi
+            need_hpm: false
     env:
       ZEPHYR_BASE: ${{ github.workspace }}/zephyr
       ZEPHYR_SDK_INSTALL_DIR: /opt/zephyr-sdk-0.16.8
@@ -21,14 +36,16 @@ jobs:
       SDK_GLUE_DIR: ${{ github.workspace }}/hpm/zephyr_sdk_glue
       SDK_GLUE_USER_DIR: ${{ github.workspace }}/hpm/sdk_glue_user
     steps:
-      # zephyr 侧主仓库 + 公开子模块（免 token）
+      # zephyr 侧主仓库 + 公开子模块（framework 六模块 + project，免 token）
       - uses: actions/checkout@v4
         with:
           path: zephyr_user
           submodules: recursive
 
-      # HPM 树（提供 sdk_glue_user 覆盖层 + zephyr-patches）
-      - uses: actions/checkout@v4
+      # HPM 树（提供 sdk_glue_user 覆盖层 + zephyr-patches，仅 hpm 板卡）
+      - name: Checkout HPM tree
+        if: matrix.need_hpm
+        uses: actions/checkout@v4
         with:
           repository: qingyu0310/Dust_Zephyr_HPMicro_Tree
           path: hpm/sdk_glue_user
@@ -42,22 +59,22 @@ jobs:
             python3-dev python3-pip python3-setuptools python3-tk xz-utils \
             file make gcc gcc-multilib g++-multilib libsdl2-dev libmagic1
 
-      # SDK 缓存
+      # Zephyr SDK（按板卡工具链，缓存 key 区分）
       - name: Cache Zephyr SDK
         id: cache-sdk
         uses: actions/cache@v4
         with:
           path: /opt/zephyr-sdk-0.16.8
-          key: zephyr-sdk-0.16.8-riscv
+          key: zephyr-sdk-0.16.8-${{ matrix.sdk_target }}
 
       - name: Install Zephyr SDK
         if: steps.cache-sdk.outputs.cache-hit != 'true'
         run: |
           curl -sL https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.16.8/zephyr-sdk-0.16.8_linux-x86_64_minimal.tar.xz | \
             sudo tar -xJ -C /opt
-          sudo /opt/zephyr-sdk-0.16.8/setup.sh -t riscv64-zephyr-elf -c
+          sudo /opt/zephyr-sdk-0.16.8/setup.sh -t ${{ matrix.sdk_target }} -c
 
-      # west + zephyr 树 + west 模块（全部在工作区，runner 可写）
+      # west + zephyr 树 + west 模块（west update 拉 hal/stm32，st 板卡需要）
       - name: Setup west workspace
         run: |
           python3 -m pip install west
@@ -67,16 +84,18 @@ jobs:
           cd ${{ github.workspace }}/zephyr && python3 -m pip install -r scripts/requirements.txt
           west update
 
-      # HPM 官方仓库（sdk_env 只 sparse 拉 hpm_sdk）
+      # HPM 官方仓库（sdk_env 只 sparse 拉 hpm_sdk，仅 hpm 板卡）
       - name: Clone HPM official repos
+        if: matrix.need_hpm
         run: |
           git clone https://github.com/hpmicro/zephyr_sdk_glue.git ${{ github.workspace }}/hpm/zephyr_sdk_glue
           git clone --depth 1 --filter=blob:none --sparse --branch v1.11.0 https://github.com/hpmicro/sdk_env.git ${{ github.workspace }}/hpm/sdk_env
           git -C ${{ github.workspace }}/hpm/sdk_env sparse-checkout set hpm_sdk
           git clone https://github.com/cherry-embedded/CherryUSB.git ${{ github.workspace }}/hpm/modules/lib/CherryUSB
 
-      # apply 你的 patch（官方仓库 → 原版 + 你的修复）
+      # apply patches（官方仓库 → 原版 + 修复）
       - name: Apply HPM patches
+        if: matrix.need_hpm
         run: |
           bash ${{ github.workspace }}/hpm/sdk_glue_user/apply-patches.sh \
             --zephyr ${{ github.workspace }}/zephyr \
@@ -84,17 +103,17 @@ jobs:
             --sdk-glue ${{ github.workspace }}/hpm/zephyr_sdk_glue \
             --cherryusb ${{ github.workspace }}/hpm/modules/lib/CherryUSB
 
-      # 构建 hpm5361icb
-      - name: Build hpm5361icb
+      # 构建
+      - name: Build ${{ matrix.board }}
         run: |
           cd ${{ github.workspace }}/zephyr_user/project
-          west build -p always -b hpm5361icb -- -DBOARD_CFG=hpm5361icb
+          west build -p always -b ${{ matrix.board }} -- -DBOARD_CFG=${{ matrix.cfg }}
 
-      # 产物
+      # 产物（upload-artifact 不支持大括号 glob，明确列文件名）
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-hpm5361icb
+          name: firmware-${{ matrix.board }}
           path: |
             ${{ github.workspace }}/zephyr_user/project/build/zephyr/zephyr.elf
             ${{ github.workspace }}/zephyr_user/project/build/zephyr/zephyr.map
