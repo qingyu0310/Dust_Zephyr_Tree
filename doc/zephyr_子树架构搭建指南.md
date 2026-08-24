@@ -50,7 +50,7 @@ E:\Zephyr\                        ← 工作区根（workspace）
 ├── zephyr-sdk-0.16.8\            ← Zephyr SDK 工具链（GCC 12.2.0 + host tools）
 │
 ├── zephyr_user\                  ← 用户自研子树（独立 git 仓库：Dust_Zephyr_Tree）
-│     ├── framework\              ← 架构层（7 个 git 子模块）
+│     ├── framework\              ← 架构层（6 个 git 子模块 + zephyr/ 加载入口）
 │     │     ├── drivers\
 │     │     ├── algorithm\
 │     │     ├── modules\
@@ -61,7 +61,7 @@ E:\Zephyr\                        ← 工作区根（workspace）
 │     ├── platform\cmsis\         ←   ARM CMSIS 兼容模块（cmsis_core.h 遮蔽）
 │     ├── boards\                 ←  用户自研板卡（st/stm32f407igh6）
 │     ├── dts\                    ←  用户自研 devicetree binding
-│     └── project\                ←  业务工程子模块（Dust_Zephyr_Architecture_Project）
+│     └── project\                ←  业务工程子模块（第 7 个 git 子模块）
 │
 ├── projects\                     ← 应用工程区
 │     └── temp\                   ←   最小用户区（本文演示的应用，独立目录）
@@ -322,7 +322,7 @@ E:\Zephyr\projects\temp\
 │     └── stm32f407igh6.overlay     ← 必须有（dust 靠它反推 BOARD），内容可空
 └── thread\                         ← 业务线程
       ├── CMakeLists.txt
-      ├── thread.hpp                ← Thread 模板
+      ├── thread.hpp                ← 来自 framework/init 的 Thread 模板
       └── gpio\trd_gpio.cpp
 ```
 
