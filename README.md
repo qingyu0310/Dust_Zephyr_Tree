@@ -1,203 +1,148 @@
-# zephyr_user — 子树架构总览
+# zephyr_user 子树架构总览
 
-> 面向 dust 战队内部成员。本架构依附于 zephyr 树，是一套**子树系统架构**，通过维护者↔使用者的
-> 上下级管理关系，保证成员在共同架构上各自发展、又不会后期分叉成互不相通的多个版本。
+> 更新日期：2026-08-21
+> 适用路径：`E:\Zephyr\zephyr_user`
 
----
+`zephyr_user` 是一棵面向 Zephyr 的用户自研子树。它把公共能力拆成 `framework/`，把板卡专属底层驱动留在 `drivers/`，把板卡和设备树放在 `boards/` / `dts/`，再用 `project/` 把这些能力装配进具体应用。
 
-## 1. 目录结构
+## 目录
 
 ```text
 zephyr_user/
-├── boards/      用户自研板卡（zephyr 树没有的板卡，如 stm32f407igh6）
+├── boards/      用户自研板卡定义
 ├── dts/         用户自研 devicetree binding
-├── doc/         架构文档
-├── drivers/     子树驱动层（本仓库板卡底层驱动，Zephyr 模块式）
-├── framework/   架构子模块（使用者不允许修改）
-├── platform/    平台中间层支持
-└── project/     维护者验证工作区（只验证 framework 六模块可用性）
+├── doc/         架构、搭建、调研文档
+├── drivers/     子树板卡底层驱动与 HAL
+├── framework/   架构层子模块 + Zephyr 模块入口
+├── platform/    平台兼容层
+└── project/     当前维护者验证工程
 ```
 
----
+## 各目录职责
 
-## 2. 各目录是干什么的
+### `boards/`
 
-### boards
+放 Zephyr 树里没有的板卡定义。当前主要是 `boards/st/stm32f407igh6/`，包含 `dts`、`pinctrl`、`defconfig`、`board.cmake`、`board.yml` 和 `README.md`。
 
-放置 zephyr 树未包含的板卡定义，只放**底层设备树**。例如 `boards/st/stm32f407igh6/`
-（rm_c 板的芯片型号）：板卡 dts、pinctrl、defconfig、board.cmake、烧录配置。具体内容以真实文件为准。
+### `dts/`
 
-### dts
+放自定义 binding。当前能看到的例子包括：
 
-放置用户自研的 devicetree binding（compatible → schema 校验）。例如
-`dts/bindings/mtd/winbond,w25q128.yaml`（上游 zephyr 没有的 W25Q128 SPI NOR Flash 型号）、
-`dts/bindings/usb/hpmicro,hpm-dustusb.yaml`（自研 HPM USB 控制器）。
+- `dts/bindings/mtd/winbond,w25q128.yaml`
+- `dts/bindings/fsmc/st,fsmc-lcd.yaml`
+- `dts/bindings/usb/hpmicro,hpm-dustusb.yaml`
+- `dts/bindings/usb/st,st-dustusb.yaml`
+- `dts/bindings/gpio/heart-beat.yaml`
 
-### drivers
+### `drivers/`
 
-**子树驱动层**：本仓库自己的底层驱动，按 Zephyr 官方驱动模型写（`zephyr/module.yml` + Kconfig +
-devicetree 设备模型注册），与 `zephyr/drivers/` 同构。放 Zephyr 树没有的板卡专属底层控制器驱动：
+这是子树的板卡底层驱动层，按 Zephyr 模块方式装配：
 
-- `drivers/fsmc/` — STM32 FSMC 8080 LCD 控制器（`st,fsmc-lcd`）
-- `drivers/usb/hal/hpm/` — USB 板卡底层 HAL（`UsbHalHpm`，HPM EHCI）
+- `drivers/fsmc/` - STM32 FSMC LCD 底层驱动
+- `drivers/usb/hal/hpm/` - HPM EHCI USB HAL
+- `drivers/usb/hal/stm32/` - STM32 OTG FS USB HAL
 
-与 `framework/drivers`（架构驱动层，C++ 外设封装）的分工：**架构 drivers 封装通用外设对象**，
-**子树 drivers 放板卡专属底层驱动**。换板卡只动这里，架构层稳定。
+对应 Kconfig 里现在有 `DUST_USB_DEVICE_HAL_HPM` 和 `DUST_USB_DEVICE_HAL_STM32`。`framework/drivers` 负责通用外设封装，`drivers/` 负责板卡专属底层实现。
 
-### doc
+### `framework/`
 
-放置架构文档：
+这是公共架构层。`framework/drivers`、`framework/algorithm`、`framework/modules`、`framework/topic`、`framework/cmd`、`framework/init` 是 6 个独立 submodule；`framework/zephyr/` 是 Zephyr 模块入口，用来自动加载这些层的 Kconfig。
 
-- `zephyr_子树架构搭建指南.md` — 从零搭建纯 zephyr 子树环境
-- `zephyr_HPM_搭建指南.md` — 在子树基础上添加 HPM SDK
-- `zephyr_HPM_底层修改.md` — HPM 底层运行时 bug 修复（直接贴代码）
-- `子树架构描述.md` — 每层是干什么的 + 配置规范 + 维护者/使用者关系
+当前各层大致对应：
 
-### framework
+- `drivers` - 通用外设封装和通信流
+- `algorithm` - 纯计算、滤波、辨识、缓冲
+- `modules` - 设备能力组合层
+- `topic` - 跨线程数据契约
+- `cmd` - shell / buzzer / flash / fatal 等横切能力
+- `init` - 启动、注册表、阶段调度
 
-放置**架构子模块**（6 个独立 submodule：`drivers` `algorithm` `modules` `topic` `cmd` `init`）。
-**使用者不允许修改**子模块内容；有 bug 或新需求，向维护者提 issue，或在自己的工作区单独维护
-（见 `子树架构描述.md` §6.6）。
+### `platform/`
 
-### platform
+当前是 `platform/cmsis/`，主要提供 `HAS_CMSIS_CORE` 和 `cmsis_core.h` 兼容垫片，解决 ARM Cortex-M 下的 CMSIS 头与 Zephyr 空桩差异。
 
-放置**平台中间层**支持。当前为 `platform/cmsis`：ARM CMSIS 兼容垫片（`cmsis_core.h` 遮蔽 +
-`HAS_CMSIS_CORE` 符号），解决 Zephyr v4.3 与 CMSIS 新旧命名差异。
+### `project/`
 
-### project
+当前这是维护者的验证工程，不承载业务大线程。`project/CMakeLists.txt` 负责把 `framework/`、`platform/cmsis/` 和 `drivers/` 挂进 Zephyr 构建；`project/Kconfig` 决定当前验证哪些架构能力；`project/thread/` 里只保留当前需要的线程样例。
 
-**维护者验证工作区**。主干 `project/` **只专注验证 framework 六模块（algorithm/cmd/drivers/init/
-modules/topic）是否能够使用**——验证它们的编译/装配/运行，**不专注任何业务线程**。业务线程全部在
-使用者工作区（`projects/<user>/project/thread/`）编写；主干只保留 gpio 心跳 + test 测试作为验证
-六模块的工具，设备树 overlay 每次只加验证当前需要的外设、用完即删。
+现在能看到的线程样例有：
 
----
+- `project/thread/gpio/trd_gpio.cpp` - GPIO 心跳
+- `project/thread/test/trd_test.cpp` - USB CDC ACM 回环测试
 
-## 3. 为什么设计子树
+## 装配链路
 
-形成一套完整的**上下级管理关系**：公共能力由维护者集中演进，使用者在自己工作区组合。
-防止成员"刚用架构时相同、后期却各不相同"——公共模块只维护一份，产品差异留在各自工作区。
-
----
-
-## 4. project 的身份
-
-- **维护者工作区**：验证 framework 六模块可用性（编译/装配/运行），**不承载业务线程**。
-- 使用者工作区以 `projects/qingyu` 为范本（`template` 已对齐），新成员复制用户区模板开自己的工作区，
-  不在主干 `project/` 写业务线程。
-
----
-
-## 5. 成员工作区必备内容
-
-用户工作区（`projects/<user>`）以 `projects/qingyu` 为范本（`template` 已对齐）：**用户区根平铺
-framework 六模块 + `project/`**，与架构层六模块共存不冲突。
+`project/CMakeLists.txt` 的实际装配顺序是：
 
 ```text
-<user>/           ← 用户工作区根
-├── algorithm/ cmd/ drivers/     ← 用户层六模块（跟架构对齐，空目录跳过）
-│   init/ modules/ topic/
-└── project/      ← 业务工程（业务线程都在这里）
-    ├── CMakeLists.txt    ← 构建装配（FW_ROOT 架构层六模块 + 用户层六模块 + project）
-    ├── Kconfig           ← 业务开关（select DUST_*）
-    ├── prj.conf          ← 通用配置
-    ├── boards/           ← 板卡配置
-    └── thread/           ← 业务线程
+BOARD / DTS / BOARD_ROOT
+    -> ZEPHYR_EXTRA_MODULES: framework + platform/cmsis + drivers
+    -> add_subdirectory(framework 各层)
+    -> add_subdirectory(project/thread)
 ```
 
-### 配置规范（通用 vs 板卡）
-
-- **`CMakeLists.txt` 和 `prj.conf`**：放置不同板卡的**通用配置**（C++ 环境、调度、总门禁）。
-- **板卡特殊配置**：放在 `boards/` 里，不写进根 prj.conf。
-
-### project/boards
-
-项目所需不同板卡的设备树内容，包含：
-
-- `board.cmake`：链接板卡所需的特殊文件——如 st 系列链接 cmsis 相关头文件，hpm 系列链接 sdk。
-- `xx.conf`：配置板卡特殊外设或模块——如不同板卡的外设 `conf=y`、挂载不同的 IMU 等模块。
-- `overlay`：板卡设备树（引脚、alias、chosen）。
-
-### project/thread
-
-管理用户业务层，文件内容**只有线程**，用于编写业务线程逻辑。通过 `Kconfig + CMake` 拉取编译对应
-线程源文件，提供快速增删线程的作用。
-
-- `thread.hpp`：轻量级线程创建类，服务线程创建；每个线程有固定创建格式，详见文件。
-- 线程通过设置对应线程的 Kconfig，然后在下面 `select` 对应子模块，即可拉取所需架构子模块。
-- 目前架构子模块基本涵盖所需内容；**未涵盖**时，向维护者提需求，或自己仿照子模块编写习惯在
-  自己工作区维护，稳定后提交给维护者，经审查后统一上传。
-- `project/thread` 还拥有 **test 线程**，通过 `TRD_TEST` 快速搭建测试或临场 demo：
+`project/Kconfig` 里当前常见的门禁是：
 
 ```kconfig
+config PRJ_MAIN
+    bool "Main business project"
+    default n
+
+config TRD_GPIO
+    bool "GPIO thread task"
+    select DUST_DEV_GPIO_OUTPUT
+    select DUST_CTL_TIMER
+
 config TRD_TEST
     bool "User test add config"
-    default n
-    select DUST_xx
-    help
-      Temporary user test switch.
+    default y
+    select DUST_COM_USB
 ```
 
----
+其中 `TRD_TEST` 对应的测试线程当前是 USB CDC ACM 回环。
 
-## 6. 编译方式
+## 板卡配置
 
-维护者提供一个 bat 脚本：`framework\cmd\build\build.bat`。它根据编译命令所在目录，寻找对应板卡名，
-并做了战队编译适配：
+`project/boards/` 下面当前有两套板卡配置：
 
-```powershell
-dust build hpm5361icb          # 普通编译
-dust build hpm5361icb -p       # 全编译（pristine）
-```
+- `project/boards/hpm/hpm5361icb/`
+- `project/boards/st/puzhong/`
 
-`hpm5361icb` 指 `project\boards\hpm\hpm5361icb\hpm5361icb.overlay`。脚本会顺着文件目录循环查找
-是否有符合该名字的设备树进行编译，因此这是**支持所有板卡**的架构，理论上可实现统一逻辑在不同板卡运行。
+它们都用 `board.cmake` / `*.conf` / `*.overlay` 组合板卡差异。当前例子里：
 
-### 板卡设备树节点命名
+- HPM 板卡启用 `CONFIG_DUST_USB_DEVICE_HAL_HPM=y`
+- STM32 板卡启用 `CONFIG_DUST_USB_DEVICE_HAL_STM32=y`
 
-不同板卡的设备树节点命名有讲究，都用**通用名**，减少对物理外设的耦合。以
-`project\boards\hpm\hpm5361icb\hpm5361icb.overlay` 为例：
+当前常见的设备树别名也比较克制，只保留真正被用到的语义名，例如：
 
 ```dts
 aliases {
-    user-can1   = &mcan0;
-    remote-uart = &uart4;
-    imu-spi     = &icm42688p;
-    imu-pwm     = &imu_pwm;
-    buzzer-pwm  = &buzzer_pwm;
-    flash-spi   = &w25q128;
-    pc-usb      = &dustusb_usb0;
+    shell-uart  = &uart3;
+    dustusb_usb0 = &usb0;
 };
 ```
 
----
+## 编译方式
 
-## 7. 如何添加自己的工作区
+`framework/cmd/build/dust.cmd` 包了一层 `dust build <name>`。当前脚本会在 `project/boards/*/<name>/` 里找 `*.overlay`，找到后自动把 `BOARD_CFG` 传给 `west build`。
 
-最好在**与子树同级**下创建一个用户工作区总文件夹，再放置自己的业务逻辑。例如：
+常见用法：
 
-```text
-Zephyr\projects\hpm5361\
-Zephyr\projects\temp\
+```powershell
+dust build hpm5361icb
+dust build puzhong
 ```
 
-使用者内容最小只需要包含 `project/` 下的所有内容；板卡和线程可按需增删。需要自己的独立内容时，
-可在自己工作区内创建文件夹，通过 Kconfig 和 CMakeLists 添加并编译。
+直接用 `west` 也可以：
 
-详细搭建步骤见 [doc/zephyr_子树架构搭建指南.md](doc/zephyr_子树架构搭建指南.md)。
-
----
+```powershell
+west build -b hpm5361icb -- -DBOARD_CFG=hpm5361icb
+west build -b stm32f407igh6 -- -DBOARD_CFG=puzhong
+```
 
 ## 推荐阅读顺序
 
-**第一阶段 · 读架构文档**（先理解每层是干什么的）：
-
-1. `README.md` — 子树总览
-2. `子树架构描述.md` — 每层职责、配置规范、维护者/使用者关系
-3. `framework/init` → `framework/cmd` → `framework/topic` → `framework/algorithm` → `framework/drivers` → `framework/modules`
-   各自的 `ARCHITECTURE.md` 和 `README.md`
-
-**第二阶段 · 读源码**（再理解具体实现/类）：
-
-1. `project` 源码 — 业务装配入口
-2. `framework/init` → `framework/cmd` → `framework/topic` → `framework/algorithm` → `framework/drivers` → `framework/modules` 源码
+1. `README.md`
+2. `子树架构介绍.md`
+3. `framework/init` -> `framework/cmd` -> `framework/topic` -> `framework/algorithm` -> `framework/drivers` -> `framework/modules`
+4. `project/CMakeLists.txt`、`project/Kconfig`、`project/thread/*`
