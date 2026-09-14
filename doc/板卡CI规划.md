@@ -1,5 +1,19 @@
 # 板卡 CI 规划（主仓库全板卡）
 
+> ## ⚠️ 2026-09-14：已废弃 —— 子树的 CI/CD 全部去掉
+>
+> **用户拍板（2026-09-14）**：子树仓库（zephyr_user）的 CI/CD 去掉——`.github/workflows/ci-build.yml` 已删除，`.github/` 目录一并清掉。
+>
+> **为什么加过又去掉**：
+> 1. **子树现在的定位只是"测试 + 薄启动"**——维护者工作区只验证 framework 六模块能不能用、各模块只做薄启动（见 `project/thread/{remote,imu}/`），不是产品工程，没有常态化编译门禁的必要。
+> 2. **对所有板卡做编译测试 = 白白增加没必要的工作量**——子树涉及板卡太多（hpm5361icb / stm32f4_disco …），全量矩阵的维护成本换不来对应的收益。
+> 3. **有些板卡只是临时使用**——等真出问题再改就行，不需要 CI 提前兜底。
+> 4. **CI/CD 的对口工作是用户区单板卡项目**——单板卡、单工程才是 CI/CD 该待的地方；子树设计的板卡太多，套 CI/CD 太麻烦。
+>
+> **配套要做的事**：GitHub master Ruleset（GH013）里的 required status check（`build-hpm` / `build-st`）要一并去掉——workflow 删了这些 check 永远不会再产生，PR 会一直卡在 `Expected — Waiting for status to be reported`，合不进 master。
+>
+> 下面 2026-08-14 的方案作为历史记录保留（已被上面的决定取代，不要照着执行）。
+
 > 2026-08-14。**方案拍板（用户）**：project 只是维护者验证层（只留 gpio+test，不写业务逻辑），**不在 project 仓库建 CI**。板卡验证移到**主仓库全板卡**——主仓库 `ci-build.yml` 从单板 hpm5361icb 扩成 **2 板卡矩阵**（hpm5361icb + stm32f4_disco）。
 
 ## 0. 目标
