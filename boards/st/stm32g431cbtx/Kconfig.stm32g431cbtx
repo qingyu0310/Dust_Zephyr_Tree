@@ -1,0 +1,6 @@
+# Copyright (c) 2026 qingyu
+# SPDX-License-Identifier: Apache-2.0
+
+# Custom board for STM32G431CBTx
+config BOARD_STM32G431CBTX
+	select SOC_STM32G431XX

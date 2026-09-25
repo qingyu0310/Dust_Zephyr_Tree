@@ -1,9 +1,9 @@
 /**
  * @file usb_hal_stm32.cpp
  * @author qingyu
- * @brief STM32 OTG FS USB 硬件抽象层实现
- * @version 0.5
- * @date 2026-08-14
+ * @brief STM32 USB 硬件抽象层实现（F4 OTG_FS / F1 USB 设备控制器）
+ * @version 0.7
+ * @date 2026-09-21
  *
  * @copyright Copyright (c) 2026
  */
@@ -14,14 +14,28 @@
 
 #include "log.hpp"
 
-#include <soc.h>                        // STM32F4 HAL（含 stm32f4xx_hal_pcd.h）
+#include <soc.h>                        // STM32Cube HAL（F4 → stm32f4xx_hal_pcd.h / F1 → stm32f1xx_hal_pcd.h）
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/irq.h>
 #include <zephyr/kernel.h>
 
-// pinctrl 配置（板级 overlay &usbotg_fs 的 pinctrl-0）
-PINCTRL_DT_DEFINE(DT_NODELABEL(usbotg_fs));
-static const struct pinctrl_dev_config* usb_pcfg = PINCTRL_DT_DEV_CONFIG_GET(DT_NODELABEL(usbotg_fs));
+// 芯片系列差异：F4 = OTG_FS（FIFO 缓冲 + OTG 时钟宏）；F1/F0/L0 = USB 设备控制器（PMA 缓冲，无 OTG）
+#if defined(USB_OTG_FS)
+#define DUST_USB_INSTANCE       USB_OTG_FS
+#define DUST_USB_CLK_ENABLE()   __HAL_RCC_USB_OTG_FS_CLK_ENABLE()
+#define DUST_USB_IS_OTG         1
+#else
+#define DUST_USB_INSTANCE       USB
+#define DUST_USB_CLK_ENABLE()   __HAL_RCC_USB_CLK_ENABLE()
+#define DUST_USB_IS_OTG         0
+// F1：端点缓冲放 PMA，BTABLE 占前 8 × 端点数 字节，其余在 EpOpen 里顺序分配
+static constexpr uint16_t kPmaBtableSize = 8 * DT_PROP(DT_NODELABEL(dustusb_usb0), num_bidir_endpoints);
+static constexpr uint16_t kPmaSize       = DT_PROP(DT_NODELABEL(dustusb_usb0), ram_size);
+#endif
+
+// pinctrl 配置（板级 overlay 里 USB 节点 dustusb_usb0 的 pinctrl-0）
+PINCTRL_DT_DEFINE(DT_NODELABEL(dustusb_usb0));
+static const struct pinctrl_dev_config* usb_pcfg = PINCTRL_DT_DEV_CONFIG_GET(DT_NODELABEL(dustusb_usb0));
 
 // PCD 句柄（无 DMA，普通 RAM，无需 nocache）
 static PCD_HandleTypeDef s_pcd;
@@ -114,7 +128,7 @@ bool UsbHalStm32::Init(const Config& cfg, EventCallback callback, void* context)
     callback_ = callback;
     context_  = context;
 
-    __HAL_RCC_USB_OTG_FS_CLK_ENABLE();
+    DUST_USB_CLK_ENABLE();
 
     if (pinctrl_apply_state(usb_pcfg, PINCTRL_STATE_DEFAULT) < 0) {
         DUST_LOG_ERR("USB pinctrl setup failed");
@@ -122,16 +136,24 @@ bool UsbHalStm32::Init(const Config& cfg, EventCallback callback, void* context)
     }
 
     memset(&s_pcd, 0, sizeof(s_pcd));
-    s_pcd.Instance                 = USB_OTG_FS;
+    s_pcd.Instance                 = DUST_USB_INSTANCE;
+#if DUST_USB_IS_OTG
     s_pcd.Init.dev_endpoints       = 4;
+#else
+    s_pcd.Init.dev_endpoints       = 8;
+#endif
     s_pcd.Init.speed               = PCD_SPEED_FULL;
-    s_pcd.Init.dma_enable          = DISABLE;
+#if !defined(STM32G4)
+    s_pcd.Init.dma_enable          = DISABLE;   // G4 的 USB_CfgTypeDef 无此成员（G4 USB 不带 DMA）
+#endif
     s_pcd.Init.phy_itface          = PCD_PHY_EMBEDDED;
     s_pcd.Init.Sof_enable          = DISABLE;
     s_pcd.Init.low_power_enable    = DISABLE;
     s_pcd.Init.lpm_enable          = DISABLE;
+#if DUST_USB_IS_OTG
     s_pcd.Init.vbus_sensing_enable = DISABLE;
     s_pcd.Init.use_dedicated_ep1   = DISABLE;
+#endif
 
     if (HAL_PCD_Init(&s_pcd) != HAL_OK) {
         DUST_LOG_ERR("HAL_PCD_Init failed");
@@ -140,9 +162,19 @@ bool UsbHalStm32::Init(const Config& cfg, EventCallback callback, void* context)
 
     s_pcd.pData = this;                     // HAL 弱回调经 pData 反查实例
 
+#if DUST_USB_IS_OTG
     HAL_PCDEx_SetRxFiFo(&s_pcd, 0x80);      // RX = 128 words（512B）
     HAL_PCDEx_SetTxFiFo(&s_pcd, 0, 0x40);   // EP0 IN = 64 words（256B）
     HAL_PCDEx_SetTxFiFo(&s_pcd, 1, 0x80);   // EP1 IN = 128 words（512B）CDC 数据
+#else
+    // F1：端点缓冲在 PMA 里，从 BTABLE 之后顺序分配。EP0 双向固定 64B 先占，
+    // 其余端点在 EpOpen 里分（HAL_PCD_EP_Open → USB_ActivateEndpoint 才把 pmaadress 写进 BTABLE）
+    pma_offset_ = kPmaBtableSize;
+    HAL_PCDEx_PMAConfig(&s_pcd, 0x00, PCD_SNG_BUF, pma_offset_);
+    pma_offset_ += 64;
+    HAL_PCDEx_PMAConfig(&s_pcd, 0x80, PCD_SNG_BUF, pma_offset_);
+    pma_offset_ += 64;
+#endif
 
     if (irq_connect_dynamic(cfg.irq_num, cfg.irq_priority, stm32_usb_isr, this, 0) < 0) {
         DUST_LOG_ERR("IRQ connect failed (irq=%u)", cfg.irq_num);
@@ -301,6 +333,16 @@ bool UsbHalStm32::EpOpen(const EndpointConfig& cfg)
         case EndpointType::Bulk:        type = EP_TYPE_BULK; break;
         default:                        return false;
     }
+
+#if !DUST_USB_IS_OTG
+    // F1：端点激活时 PCD 才会把 pmaadress 写进 BTABLE，必须先分 PMA
+    if (static_cast<uint32_t>(pma_offset_) + cfg.max_packet_size > kPmaSize) {
+        DUST_LOG_ERR("PMA overflow (ep=0x%02x off=%u mps=%u)", cfg.address, pma_offset_, cfg.max_packet_size);
+        return false;
+    }
+    HAL_PCDEx_PMAConfig(&s_pcd, cfg.address, PCD_SNG_BUF, pma_offset_);
+    pma_offset_ += cfg.max_packet_size;
+#endif
 
     if (HAL_PCD_EP_Open(&s_pcd, cfg.address, cfg.max_packet_size, type) != HAL_OK) {
         DUST_LOG_ERR("HAL_PCD_EP_Open(0x%02x) failed", cfg.address);

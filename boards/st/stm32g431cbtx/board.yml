@@ -1,0 +1,6 @@
+board:
+  name: stm32g431cbtx
+  full_name: Custom STM32G431CBTx Board
+  vendor: st
+  socs:
+    - name: stm32g431xx

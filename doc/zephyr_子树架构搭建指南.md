@@ -380,12 +380,18 @@ Memory region         Used Size  Region Size  %age    Used
 
 ### 8.1 将 `dust` 命令添加进环境
 
-`dust` 是团队对 `west build` 的封装，让你不必记板名映射，直接用 `dust build <板卡配置名>`。
+`dust` 是团队对 `west build` / `west flash` 的封装，让你不必记板名映射、也不必先 `cd` 进项目目录。
 
-**它是什么：** 两个脚本在 `zephyr_user\framework\cmd\build\`：
-- `dust.cmd`：子命令分发（`dust build <board>` → 调 `build.bat`）。
+**它是什么：** 脚本在 `zephyr_user\framework\cmd\build\`：
+- `dust.cmd`：子命令分发（`dust build <board>` → 调 `build.bat`；`dust flash` → 调 `flash.bat`）。
 - `build.bat`：核心逻辑——遍历当前项目 `boards\*\<name>\*.overlay` 反推出 BOARD 名，
   然后执行 `west build -b <BOARD> <args> -- -DBOARD_CFG=<name>`。
+- `flash.bat`：定位项目根后执行 `west flash <args>`，参数原样透传。
+- `build.ps1` / `flash.ps1`：PowerShell 版，同一套定位语义。
+
+**工作区定位（build 与 flash 共用）：** 先看当前目录有没有 `CMakeLists.txt`（项目根，直接用），
+没有再看有没有 `project\CMakeLists.txt`（工作区根，进入其下 `project\`），都没有就报错。
+所以既可以在工作区根敲，也可以在项目根敲；解析到哪，`build\` 就落在哪、flash 就从哪读。
 
 **安装（把脚本目录加进 PATH）：**
 
@@ -400,15 +406,18 @@ Memory region         Used Size  Region Size  %age    Used
 > 之后开新终端生效（当前终端需重开，或用 `refreshenv`）。也可把上面这行追加到
 > `Activate.ps1` 末尾（同 [§7](#7-环境变量) 的挂载方式），每次激活自动带。
 
-**用法（在项目根目录）：**
+**用法（工作区根或项目根都可以）：**
 
 ```powershell
 cd E:\Zephyr\projects\temp
 dust build board_rm_c        # 等价于 west build -b stm32f407igh6 -- -DBOARD_CFG=board_rm_c
+dust flash                   # 等价于 west flash（进入 project\ 后原样透传参数）
 ```
 
-> `build.bat` 要求**当前目录是项目根**（有 `CMakeLists.txt`），且必须在激活了 venv
-> （west 可用）的终端里运行。未找到匹配的板卡配置时，退化为 `west build -b <name>`。
+> `dust build` / `dust flash` 支持在**工作区根或项目根**执行：若在工作区根执行，会自动解析到
+> 该工作区自己的 `project` 目录。必须在激活了 venv（west 可用）的终端里运行。
+> 未找到匹配的板卡配置时，`dust build` 退化为 `west build -b <name>`；
+> `dust flash` 不需要板卡名（板卡与 runner 从 build 目录读取）。
 
 ---
 

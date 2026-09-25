@@ -1,0 +1,17 @@
+# Copyright (c) 2026, qingyu
+# SPDX-License-Identifier: Apache-2.0
+
+description: STM32 TIM quadrature encoder (user-layer driver, hardware encoder mode)
+
+# 只用来给 A/B 相引脚一个合法宿主：driver 不用 compatible 绑定，
+# TIM 实例由使用方在 Encoder::Config 里传（见 drivers/device/encoder）。
+compatible: "st,stm32-encoder"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  pinctrl-0:
+    required: true
+
+  pinctrl-names:
+    required: true

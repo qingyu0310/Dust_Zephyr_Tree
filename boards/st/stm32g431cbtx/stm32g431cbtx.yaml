@@ -1,0 +1,14 @@
+identifier: stm32g431cbtx
+name: Custom STM32G431CBTx Board
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+ram: 32
+flash: 128
+supported:
+  - gpio
+  - uart
+  - usb_device
+vendor: st

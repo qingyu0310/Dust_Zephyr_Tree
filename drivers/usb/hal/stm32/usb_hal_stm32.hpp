@@ -1,9 +1,9 @@
 /**
  * @file usb_hal_stm32.hpp
  * @author qingyu
- * @brief STM32 OTG FS USB 硬件抽象层
- * @version 0.3
- * @date 2026-08-14
+ * @brief STM32 USB 硬件抽象层（F4 OTG_FS / F1 USB 设备控制器）
+ * @version 0.4
+ * @date 2026-09-14
  *
  * @copyright Copyright (c) 2026
  */
@@ -77,6 +77,8 @@ private:
     uint8_t rx_buf_[2][UsbHal::kRxBufSize] {};  // OUT 双缓冲（轮换）
     uint8_t tx_buf_[UsbHal::kTxBufSize] {};     // IN 发送拷贝缓冲
     uint8_t rx_ping_ = 0;                       // RX 双缓冲轮换索引
+
+    uint16_t pma_offset_ = 0;                   // F1：PMA 缓冲分配偏移（BTABLE 之后，EpOpen 逐个往后分）
 
     // EP0 IN 分包状态（F4 LL USB_EPStartXfer 对 EP0 单次传输硬截断为 MPS=64B，超长需续传）
     uint16_t       ep0_tx_rem_ = 0;             // EP0 IN 剩余字节
