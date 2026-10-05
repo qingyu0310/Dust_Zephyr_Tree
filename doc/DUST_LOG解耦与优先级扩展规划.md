@@ -583,7 +583,8 @@ boot 早期没有 shell 线程消费队列，不能把所有输出统一改成�
 - 编译通过。
 - `h` 能看到 `log list/on/off` 帮助。
 - `log list` 能列出 `DUST_LOG_DBG` 注册过的名字。
-- `log on vofa` 后，`project/thread/test/trd_test.cpp` 里的 `DUST_LOG_DBG("vofa", "%f,%f", ...)` 输出仍是纯 `v0,v1\r\n`，没有 ANSI。
+- `log on vofa` 后，`project/thread/test/trd_test.cpp` 里的 `DUST_LOG_DBG("vofa", "%f,%f", ...)` 默认输出**带 ANSI 颜色**。
+  （2026-10-05 更新：DBG 输出形态已改为按名字的 `LogEntry::vofa` 标志控制，默认上色；要纯 `v0,v1\r\n` 需先 `log mode vofa on`。见 `doc/DUST_LOG_DBG输出模式标志规划.md`。）
 - `log off` 后 DBG 停止。
 - 连续普通日志不会被 DBG 长流挤掉。
 - 连续命令响应不会被 DBG 长流挤掉。
