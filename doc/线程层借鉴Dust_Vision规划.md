@@ -312,8 +312,9 @@ public:
 ```text
 thread list                       列出所有线程：名字 / 状态 / 运行次数 / 错误次数 / 栈剩余
 thread show <name>                单线程详细统计（含耗时）
-thread stop <name>                请求该线程停止（调试用，非软重启）
-reset <name>                      清零该线程计数器
+thread pause <name>               暂停线程（保留现场，可恢复）
+thread resume <name>              恢复被暂停的线程
+thread reset <name>               清零该线程计数器
 ```
 
 输出样例（`SendCommandLine` 走命令响应通道）：
@@ -862,17 +863,26 @@ public:
 
 > 每个阶段独立可编译、可验证。阶段 1~3 只改 `thread.hpp` 与新增文件，不动任何业务线程；阶段 4 才改调用点。
 
-### 阶段 0：确认（不改代码）
+### 阶段 0：确认（不改代码）—— ✅ 2026-10-19 已拍板
 
-| 待确认项 | 建议值 |
+| 待确认项 | 结论 |
 |---|---|
-| 是否引入 `System_Shutdown` | 引入，但先只提供 API，不接线（等软重启需求） |
-| join 超时 | 1000 ms（模块内固定） |
-| 线程表容量 | 16 |
-| 是否改指针表 | 暂不做 |
-| 是否加 init cleanup | 做（仅 buzzer/flash 有实体） |
-| **统计是否加 Kconfig 开关** | **先不加**，实测无影响再说 |
-| **统计是否对裸任务生效** | 否——裸任务无 `Run` 外壳，只统计受管任务 |
+| 是否引入 `System_Shutdown` | **引入，但先只提供 API，不接线**（等软重启需求） |
+| join 超时 | **1000 ms**（模块内固定） |
+| 线程表容量 | **16** |
+| 是否改指针表 | **做**（原建议暂不做，用户决定做） |
+| 是否加 init cleanup | **做**（仅 buzzer/flash 有真实清理实体，其余传 `nullptr`） |
+| 统计是否加 Kconfig 开关 | **先不加**，实测无影响再说 |
+| 统计是否对裸任务生效 | **否**——裸任务无 `Run` 外壳，只统计受管任务 |
+
+**结论**：六个阶段全部执行（原阶段 5、6 由「可选」转为「必做」）。
+
+> **⚠️ 2026-10-19 实施中变更（阶段 4 完成后由用户否决）**：
+> - **不做 `System_Shutdown` / `System_RequestStop` / `System_StopRequested`** —— MCU 运行期不存在"停止系统"，无调用者。上表第一行的结论已作废。
+> - **`ThreadEntry` 不带 `stop` / `join`** —— 唯一用途是 Shutdown 收尾，随之删除。
+> - **`REGISTER_THREAD_BASE` 删除** —— 与 `REGISTER_THREAD` 合并，只剩 3 参数一种。
+> - 阶段 4 的实际落地内容与下方原文不同，以「阶段 5 §5.1 现状盘点」为准。
+> - 新增 **阶段 5：周期外壳**（用户追加），原阶段 5/6 顺延为 6/7。
 
 ### 阶段 1：`Thread` 停止原语 + 可中断等待
 
@@ -1233,7 +1243,7 @@ public:
 
 - `thread list`：遍历 `ThreadRegistry`，每行 `name state run retry fatal exit drop stack`；
 - `thread show <name>`：`Find` 后输出多行详情；
-- `thread stop <name>`：`RequestStop()`（调试用，不做 join）；
+- `thread pause <name>` / `thread resume <name>`：`Pause()` / `Resume()`；
 - `thread reset <name>`：清零该线程计数器（需要给 `ThreadBase` 增加 `ResetStats()` 虚函数）。
 - 输出全部走 `Log::SendCommandLine()`，与 `var` 一致。
 
@@ -1241,7 +1251,7 @@ public:
 
 ```cmake
 if(CONFIG_DUST_CMD_SHELL)
-    target_sources(app PRIVATE shell/shell.cpp shell/thread_cmd.cpp)
+    target_sources(app PRIVATE shell/shell.cpp shell/thread/thread_cmd.cpp)
 endif()
 ```
 
@@ -1259,7 +1269,8 @@ else if (std::strcmp(reinterpret_cast<const char*>(cmd), "thread") == 0)
 ```cpp
 Log::SendCommandLine("thread list             列出所有线程运行统计");
 Log::SendCommandLine("thread show <name>      查看单线程详细统计");
-Log::SendCommandLine("thread stop <name>      请求线程停止（调试）");
+Log::SendCommandLine("thread pause <name>     暂停线程（保留现场）");
+Log::SendCommandLine("thread resume <name>    恢复被暂停的线程");
 Log::SendCommandLine("thread reset <name>     清零线程计数器");
 ```
 
@@ -1283,9 +1294,11 @@ Log::SendCommandLine("thread reset <name>     清零线程计数器");
 
 ---
 
-### 阶段 4：`REGISTER_THREAD` 生命周期
+### 阶段 4：`REGISTER_THREAD` 生命周期（⚠️ stop/join 部分已否决，见 §5.1）
 
-**目标**：线程注册项带 stop/join，框架能统一收尾。
+> **实施结果**：只保留 `ThreadEntry` 独立结构 + `REGISTER_INIT` 加 `cleanup`。
+> `stop` / `join` 字段、`System_Shutdown`、登记表、`REGISTER_THREAD_BASE` 全部删除。
+> 下方原文保留作为决策记录，**不要照它执行**。
 
 **改动 1**：`framework/init/Init_entry.hpp`
 
@@ -1471,7 +1484,178 @@ Task 里 `k_msleep(1)` → `if (thread_.WaitForStop(K_MSEC(1))) break;`；`k_sem
 
 ---
 
-### 阶段 5（可选）：`REGISTER_INIT` cleanup
+### 阶段 5：周期外壳 —— 把「等下一拍」收进 `Thread`（2026-10-19 追加）
+
+#### 5.1 现状盘点（截至阶段 4 完成）
+
+**已落地**：
+
+| 项 | 位置 | 状态 |
+|---|---|---|
+| `TaskResult{Exit,Retry,Fatal}` + `RecoveryHook` | `thread/thread.hpp` | 就绪，**无任何线程使用** |
+| `Thread::Run` 受管任务外壳 | `thread/thread.hpp` | 就绪，**无任何线程使用** |
+| 统计字段 + `GetStats` + `ThreadBase` | `thread/thread.hpp` | 就绪 |
+| `ThreadRegistry` + `thread list/show/pause/resume/reset` | `init/thread/` + `cmd/shell/thread/` | 就绪 |
+| ~~`RequestStop` / `StopRequested` / `WaitForStop` / `Join`~~ | `thread/thread.hpp` | **已删除**（无调用者，见 §5.1） |
+| `InitEntry.cleanup` + 失败回滚 | `startup/Init_entry.*` | 就绪，buzzer/flash 有实体 |
+| `REGISTER_THREAD(fn, stage, name)` | `startup/Init_entry.hpp` | 3 参数，`ThreadEntry` 独立结构 |
+| 目录分层 | `init/{startup,thread,irq}`、`shell/{log,var,thread}` | 完成 |
+
+**已舍弃**（阶段 0 曾拍板要做，实施后由用户否决）：
+
+| 舍弃项 | 原因 |
+|---|---|
+| `System_Shutdown` / `System_RequestStop` / `System_StopRequested` | MCU 无进程退出语义，运行期不存在"停止系统" |
+| `ThreadEntry.stop` / `ThreadEntry.join` 字段 | 唯一用途是 Shutdown 遍历收尾，Shutdown 删后无调用者 |
+| `REGISTER_THREAD_BASE` 宏 | 与 `REGISTER_THREAD` 合并，只剩 3 参数一种 |
+| `started_threads[]` / `inited_entries[]` 登记表 | 只服务 Shutdown |
+
+**已废弃**：`RequestStop` / `StopRequested` / `WaitForStop` / `Join` —— 用户确认"MCU 上线程不需要停止"，改用 `Pause` / `Resume`（`k_thread_suspend` / `k_thread_resume`，保留全部现场）。
+
+#### 5.2 问题：循环控制泄进了 Task
+
+当前 `ImuManager::Task`：
+
+```cpp
+for (;;)
+{
+    if (thread_.StopRequested()) break;              // ← 外壳该管的事
+    ...
+    if (thread_.WaitForStop(K_MSEC(1))) break;       // ← 外壳该管的事
+}
+```
+
+这两行与业务无关，却写在业务任务里。只要线程迁到受管任务（`TaskResult`），它们就完全多余——外壳本来就有循环。
+
+同理 `Shell::Task` 和 `Remote::Task` 的 `StopRequested()` 检查也是外壳该做的。
+
+#### 5.3 设计：Task 只写「一拍」
+
+`TaskResult` 增加 `Continue`：
+
+```cpp
+enum class TaskResult : uint8_t
+{
+    Continue = 0,   // 本拍正常结束：外壳等下一拍再调一次
+    Exit     = 1,   // 任务主动结束：线程退出
+    Retry    = 2,   // 可恢复错误：交给恢复钩子
+    Fatal    = 3,   // 不可恢复错误：记录后退出
+};
+```
+
+`Start` 增加周期参数：
+
+```cpp
+/**
+ * @brief 启动周期任务：外壳负责循环、停止检查、周期等待与统计
+ * @param entry    任务入口（每拍调用一次）
+ * @param period   两拍之间的等待时长
+ * @param prio     线程优先级
+ * @param context  任务上下文（每拍原样传回）
+ * @param name     线程名
+ */
+void Start(TaskFunc entry, k_timeout_t period, ThreadPrio prio, void* context, const char* name);
+```
+
+外壳：
+
+```cpp
+void RunPeriodic()
+{
+    while (!StopRequested())
+    {
+        atomic_inc(&run_count_);
+        const uint64_t begin_cycle = k_cycle_get_64();
+
+        const TaskResult result = task_(context_);
+
+        const uint64_t elapsed = k_cycle_get_64() - begin_cycle;
+        run_cycles_ += elapsed;
+        last_run_cycles_ = elapsed;
+        if (elapsed > max_run_cycles_) max_run_cycles_ = elapsed;
+
+        switch (result)
+        {
+            case TaskResult::Continue:
+                break;
+
+            case TaskResult::Exit:
+                atomic_inc(&exit_count_);
+                return;
+
+            case TaskResult::Fatal:
+                atomic_inc(&fatal_count_);
+                DUST_LOG_ERR("thread %s fatal", Name());
+                return;
+
+            case TaskResult::Retry:
+                atomic_inc(&retry_count_);
+                if (hook_ == nullptr || !hook_(context_)) return;
+                break;
+        }
+
+        if (WaitForStop(period_)) return;   // 停止请求在这里也能立即生效
+    }
+}
+```
+
+**Task 变成**：
+
+```cpp
+static TaskResult Task(void* ctx)
+{
+    auto* self = static_cast<ImuManager*>(ctx);
+    if (!self->ReadOnce()) return TaskResult::Retry;
+    return TaskResult::Continue;
+}
+```
+
+没有 `for (;;)`、没有 `StopRequested()`、没有 `WaitForStop()`、没有统计代码。
+
+#### 5.4 兼容：非周期任务
+
+一次性任务（跑完就结束，如标定）不需要周期：
+
+```cpp
+void Start(TaskFunc entry, ThreadPrio prio, void* context, const char* name);   // 保留，周期视为 K_NO_WAIT
+void Start(TaskFunc entry, k_timeout_t period, ThreadPrio prio, void* context, const char* name);
+```
+
+两参重载内部 `period_ = K_NO_WAIT`，外壳仍走 `RunPeriodic()`，但 `WaitForStop(K_NO_WAIT)` 立即返回，等价于连续调用 Task，直到返回 `Exit`/`Fatal` 或钩子拒绝。
+
+#### 5.5 裸任务不变
+
+`Start(k_thread_entry_t, ...)` 完全不动。裸任务仍然是 `void(void*,void*,void*)` 入口、自己写循环、自己 `k_msleep`。**统计对裸任务依旧为 0**（没有外壳）。
+
+#### 5.6 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `framework/init/thread/thread.hpp` | `TaskResult` 加 `Continue`；`Start` 加重载带 `k_timeout_t period`；`Run()` 改 `RunPeriodic()` + `period_` 成员 |
+| `framework/modules/imu/drivers/imu.cpp` / `.hpp` | `Task()` 改成单拍函数返回 `TaskResult`；`Start(prio)` → `Start(task, period, prio, this, "imu")`；删 `StopRequested`/`WaitForStop` 两行 |
+| `framework/modules/remotes/remote.cpp` / `.hpp` | 同上（解析循环内部那段 `while(true)` 保留，因为它是在处理一次收到的数据，不是周期结构） |
+| `framework/cmd/shell/shell.cpp` / `.hpp` | `Task()` 改成单拍函数；接收循环 `k_sem_take` 保持在单拍内；外壳负责重复调用 |
+| `project/thread/imu/trd_imu.cpp`、`project/thread/remote/trd_remote.cpp` | 若 `Start` 签名变了，这里同步 |
+| `framework/cmd/shell/thread/thread_cmd.cpp` | `thread pause` / `resume`（`stop` 已删除） |
+
+#### 5.7 验证
+
+1. 编译通过；
+2. 上板，`thread list` 中 `imu` / `remote` / `shell` 的 `run` 计数持续增长；
+3. `thread show imu` 的 `last` ≈ 1ms（IMU 周期），`run_ns` 随运行时间线性增长；
+4. `thread pause imu` 后，`state` 变 `paused`，`run` 停止增长；`thread resume imu` 后继续增长且不归零；
+5. 启动日志顺序不变。
+
+#### 5.8 待确认
+
+- `shell` 的单拍是「等一次 UART 事件」而不是固定周期。`k_sem_take(K_FOREVER)` 放在单拍内会让外壳的 `WaitForStop(period)` 失去意义。两种处理：
+  - **A（推荐）**：shell 继续用裸任务，不迁受管任务——它是事件驱动，不是周期任务；
+  - **B**：外壳支持「Task 自己阻塞」模式，即 `period = K_FOREVER` 时外壳不再额外等待；
+- `retry_count` 在 `Continue` 模式下语义仍为「可恢复错误次数」，不受影响。
+
+---
+
+### 阶段 6：`REGISTER_INIT` cleanup（已拍板执行）
 
 **目标**：初始化失败可回滚。
 
@@ -1485,9 +1669,64 @@ Task 里 `k_msleep(1)` → `if (thread_.WaitForStop(K_MSEC(1))) break;`；`k_sem
 
 ---
 
-### 阶段 6（可选）：指针表
+### 阶段 7：指针表（已拍板执行）
 
-见 §7。独立阶段，无依赖，可跳过。
+见 §7。独立阶段，与前面各阶段无依赖；放在最后执行，避免与结构体改签名的改动混在一起。
+
+**改动 1**：`framework/init/Init_entry.hpp` 的两个注册宏
+
+```cpp
+#define REGISTER_INIT(fn, stage_, level_, fail_, cleanup_, name_)                   \
+    static const InitEntry kInitEntry_##fn {                                        \
+        fn, cleanup_, InitStage::stage_, InitLevel::level_,                         \
+        InitFailPolicy::fail_, name_                                                \
+    };                                                                              \
+    static const InitEntry* const kInitEntryPtr_##fn                                \
+        __attribute__((used, __section__(".user_init"), aligned(sizeof(void*)))) =  \
+            &kInitEntry_##fn
+
+#define REGISTER_THREAD(fn, stage_, name_)                                          \
+    static const ThreadEntry kThreadEntry_##fn {                                    \
+        fn, ThreadStage::stage_, name_                                              \
+    };                                                                              \
+    static const ThreadEntry* const kThreadEntryPtr_##fn                            \
+        __attribute__((used, __section__(".user_thread"), aligned(sizeof(void*)))) = \
+            &kThreadEntry_##fn
+```
+
+**改动 2**：`framework/init/Init_entry.cpp` 的遍历
+
+```cpp
+extern const InitEntry*   const __user_init_start[];
+extern const InitEntry*   const __user_init_end[];
+extern const ThreadEntry* const __user_thread_start[];
+extern const ThreadEntry* const __user_thread_end[];
+
+// Init
+for (const InitEntry* const* item = __user_init_start; item < __user_init_end; ++item)
+{
+    const InitEntry* e = *item;
+    ...
+}
+
+// Thread
+for (const ThreadEntry* const* item = __user_thread_start; item < __user_thread_end; ++item)
+{
+    const ThreadEntry* e = *item;
+    if (e->stage != stage) continue;
+    ...
+}
+```
+
+**改动 3**：`framework/cmd/linker/dust_init.ld` **不需要改**——`KEEP(*(.user_init))` 对指针表同样有效。
+
+**验证**：
+
+1. 编译通过；
+2. 上板启动日志顺序与阶段 4/5 完全一致；
+3. 可顺带核对 `sizeof(void*)` 对齐：段内每个条目 4 B（32 位目标）。
+
+**产出**：`Init_entry.hpp`、`Init_entry.cpp`（`dust_init.ld` 不动）
 
 ---
 
@@ -1514,17 +1753,13 @@ bool thread_start()
 }
 ```
 
-**new**：
+**new**（阶段 5 之后：Task 只写一拍，循环/等待/停止检查都在外壳）：
 
 ```cpp
 static TaskResult Task(void*)
 {
-    while (!thread_.StopRequested())
-    {
-        if (thread_.WaitForStop(K_MSEC(10))) break;
-        ...
-    }
-    return TaskResult::Exit;
+    ...
+    return TaskResult::Continue;     // 这一拍正常，等下一拍
 }
 
 static bool test_recover(void*)
@@ -1535,7 +1770,7 @@ static bool test_recover(void*)
 bool thread_start()
 {
     thread_.SetRecoveryHook(test_recover);
-    thread_.Start(Task, ThreadPrio::High, nullptr, "test");
+    thread_.Start(Task, K_MSEC(10), ThreadPrio::High, nullptr, "test");
     return true;
 }
 ```
@@ -1547,21 +1782,23 @@ static TaskResult Task(void*)
 {
     if (!device_.IsOpen()) return TaskResult::Retry;    // 交给钩子重连
     ...
-    return TaskResult::Exit;
+    return TaskResult::Continue;                       // 这一拍正常
 }
 
 static bool recover(void*)
 {
     device_.Close();
-    while (!thread_.WaitForStop(K_MSEC(1000)))
+
+    for (;;)
     {
-        if (device_.Open()) return true;                // 重进 Task
+        if (thread_.StopRequested()) return false;     // 停止请求：不再重连
+        if (device_.Open()) return true;               // 重进 Task
+        k_msleep(1000);
     }
-    return false;
 }
 ```
 
-**注意**：`WaitForStop` 在 `recover` 里被调用时，停止请求已经置位的话会立即返回 true —— 正确行为（不再重试）。
+**注意**：钩子里不要用 `WaitForStop` 做"等一会儿"，那是步进等待语义；重连间隔用 `k_msleep` 更直白，停止检查单独一行。
 
 ---
 
@@ -1569,22 +1806,20 @@ static bool recover(void*)
 
 | 项 | 值 | 位置 |
 |---|---|---|
-| `kMaxStartedThreads` | 16 | `Init_entry.cpp` |
-| `ThreadRegistry::kMaxThreads` | 16 | `ThreadRegistry.hpp` |
-| join 超时 | 1000 ms | 各 `thread_join()` / `Shell::Join()` |
+| `ThreadRegistry::kMaxThreads` | 16 | `thread_registry.hpp` |
 | `Thread` 增量 RAM | ≈72 B/实例（统计口径） | `thread.hpp` |
-| 统计时间源 | `k_cycle_get_64` + `k_cyc_to_ns_floor64` | `Thread::Run` |
+| 统计时间源 | `k_cycle_get_64` + `k_cyc_to_ns_floor64` | `Thread::RunPeriodic` |
 | 统计开关 | 先不加 Kconfig | — |
-| `TaskResult` 取值 | Exit=0 / Retry=1 / Fatal=2 | `thread.hpp` |
-| 恢复钩子调用时机 | 仅 `Retry` | `Thread::Run` |
-| `Fatal` 处理 | 打 ERR 日志后退出线程 | `Thread::Run` |
-| stop 顺序 | 逆序 | `System_Shutdown` |
-| join 顺序 | 逆序 | `System_Shutdown` |
-| cleanup 顺序 | 逆序 | `System_Shutdown` |
-| 基础版宏 | `REGISTER_THREAD_BASE(fn, stage, name)`（stop/join 内部填 `nullptr`） | `Init_entry.hpp` |
-| 基础版线程 | 不参与 `System_Shutdown` 收尾 | — |
+| `TaskResult` 取值 | Continue=0 / Exit=1 / Retry=2 / Fatal=3 | `thread.hpp` |
+| 周期等待 | `WaitForStop(period_)` | `Thread::RunPeriodic` |
+| 恢复钩子调用时机 | 仅 `Retry` | `Thread::RunPeriodic` |
+| `Fatal` 处理 | 打 ERR 日志后退出线程 | `Thread::RunPeriodic` |
+| 裸任务 | 不参与统计，不参与周期外壳 | `Start(k_thread_entry_t, ...)` |
+| ~~stop/join 顺序~~ | ~~逆序~~ | ~~`System_Shutdown`（已删除）~~ |
+| ~~join 超时~~ | ~~1000 ms~~ | ~~已删除~~ |
 | 线程名 | ≤31 字节（`CONFIG_THREAD_MAX_NAME_LEN=32`） | Zephyr Kconfig |
-| 注册项 | 可为 `nullptr` | 宏与调用点 |
+| `REGISTER_THREAD` | 3 参数（`fn, stage, name`） | `Init_entry.hpp` |
+| `REGISTER_INIT` | 6 参数（`fn, stage, level, fail, cleanup, name`） | `Init_entry.hpp` |
 
 ---
 
@@ -1593,7 +1828,7 @@ static bool recover(void*)
 | 风险 | 影响 | 应对 |
 |---|---|---|
 | `WaitForStop` 替换 `k_msleep` 后周期不准 | 业务节奏变化 | `WaitForStop` 的 timeout 与原 sleep 相同，停止时才提前返回；周期误差在 1 个 tick 内 |
-| 线程不响应 stop 导致 join 超时 | 软重启卡 1s | join 超时后记 ERR，必要时 `k_thread_abort`（不会释放资源，仅兜底） |
+| `TaskResult` 加 `Continue` 改枚举值 | 已有代码若按数值比较会错位 | 现有代码全部用 `TaskResult::Xxx` 符号，无数字比较；改后重新编译即可 |
 | `Thread` 构造函数在静态初始化阶段调用 `k_sem_init` | 早期初始化顺序问题 | Zephyr 静态构造在驱动初始化之后、`main` 之前；`k_sem_init` 本身不依赖调度器 |
 | 新增 `log.hpp` 依赖到 `thread.hpp` | 无壳编译时宏为空，无影响 | `log.hpp` 已有 `#ifdef` 空宏分支 |
 | 注册表容量 16 不够 | 超出线程不参与收尾 | 打 ERR 日志；容量可调 |
@@ -1603,35 +1838,57 @@ static bool recover(void*)
 | `k_thread_state_str` 读状态时线程正在切换 | 读到的状态是瞬时值 | 属正常；命令输出附「瞬时」说明 |
 | 统计字段被多任务并发读写 | `uint64_t` 非原子，32 位平台上撕裂 | 耗时量只由工作线程写、shell 只读，允许瞬时不一致 |
 
-**回退**：阶段 1~3 只改 `thread.hpp` + 新增文件，回退就是删除新增文件、恢复 `thread.hpp`；阶段 4 的回退需要同时恢复 4 处宏调用与 `Init_entry.*`。
+**回退**：阶段 1~3、5 只改 `thread.hpp` + 新增文件，回退就是删除新增文件、恢复 `thread.hpp`；阶段 4 的回退需要同时恢复各注册点与 `Init_entry.*`。
+
+---
+
+## 12.5 实施进度（2026-10-19）
+
+| 阶段 | 状态 | 说明 |
+|---|---|---|
+| 0 确认 | ✅ | 见 §9 阶段 0 |
+| 1 停止原语 | ✅ | `thread.hpp` 0.2 → 已并入后续版本 |
+| 2 受管任务 + 钩子 | ✅ | `thread.hpp` 0.3 |
+| 3 统计 + `thread` 命令 | ✅ | `thread.hpp` 0.3、`thread_registry.hpp`、`thread_cmd.*` |
+| 4 注册项生命周期 | ✅ | `ThreadEntry` 独立结构 + `InitEntry.cleanup`；`stop`/`join`/`System_Shutdown`/登记表/`REGISTER_THREAD_BASE` **已删除**（用户否决）；线程控制改 `Pause`/`Resume` |
+| 5 周期外壳 | ✅ | `TaskResult::Continue` + `Start(period)` + `RunPeriodic`；imu/remote/test 已迁移，shell 保持裸任务 |
+| 6 `REGISTER_INIT` cleanup | ✅ | buzzer/flash 有实体，其余 `nullptr` |
+| 7 指针表 | ✅ | 段内存 `const InitEntry* const` / `const ThreadEntry* const`；遍历改双层指针 |
+| 目录分层 | ✅ | `init/{startup,thread,irq}`、`shell/{log,var,thread}` |
+| 用户区同步 | ✅ | 7 个工作区 78 处注册点已迁移（`REGISTER_INIT` 6 参 / `REGISTER_THREAD` 3 参） |
 
 ---
 
 ## 13. 执行清单
 
 ```text
-[ ] 阶段 0：确认 §9 阶段 0 的各项（System_Shutdown 是否接线 / join 超时 / 容量 / 指针表 / cleanup / 统计开关）
-[ ] 阶段 1：改 framework/init/thread.hpp（停止原语）
-[ ] 阶段 1：编译验证（现有调用方零改动）
-[ ] 阶段 2：改 framework/init/thread.hpp（受管任务 + 恢复钩子）
-[ ] 阶段 2：编译验证
-[ ] 阶段 3：改 framework/init/thread.hpp（ThreadStats + ThreadBase + 统计字段）
-[ ] 阶段 3：新增 framework/init/ThreadRegistry.hpp
-[ ] 阶段 3：新增 framework/cmd/shell/thread_cmd.{hpp,cpp}
-[ ] 阶段 3：改 framework/cmd/CMakeLists.txt + shell.cpp（命令分发 + 帮助）
-[ ] 阶段 3：编译验证
-[ ] 阶段 3：上板验证 thread list / show / stop / reset 四条命令
-[ ] 阶段 4：改 Init_entry.hpp（ThreadEntry + 宏）
-[ ] 阶段 4：改 Init_entry.cpp（RunStage + started_threads）
-[ ] 阶段 4：改 System_startup.h（RequestStop / StopRequested / Shutdown）
-[ ] 阶段 4：改 5 处注册点（3 处完整版 + 2 处 REGISTER_THREAD_BASE）+ stop/join 实现
-[ ] 阶段 4：编译验证
-[ ] 阶段 4：上板验证启动日志顺序不变
-[ ] 阶段 4：临时调用 System_Shutdown 验证 stop/join 不超时
-[ ] 阶段 5（可选）：改 InitEntry + REGISTER_INIT + 7 处调用点
-[ ] 阶段 6（可选）：链接段改指针表
-[ ] 文档同步：framework/init/README.md、ARCHITECTURE.md 更新线程生命周期与注册项
-[ ] 记忆同步：project-state-snapshots 增补本规划状态
+[x] 阶段 0：确认 §9 阶段 0 的各项
+[x] 阶段 1：改 framework/init/thread/thread.hpp（停止原语）
+[x] 阶段 1：编译验证（现有调用方零改动）
+[x] 阶段 2：改 framework/init/thread/thread.hpp（受管任务 + 恢复钩子）
+[x] 阶段 2：编译验证
+[x] 阶段 3：改 thread.hpp（ThreadStats + ThreadBase + 统计字段）
+[x] 阶段 3：新增 framework/init/thread/thread_registry.hpp
+[x] 阶段 3：新增 framework/cmd/shell/thread/thread_cmd.{hpp,cpp}
+[x] 阶段 3：改 framework/cmd/CMakeLists.txt + shell.cpp（命令分发 + 帮助）
+[x] 阶段 3：编译验证
+[x] 阶段 3：上板验证 thread list / show / pause / resume / reset 五条命令
+[x] 阶段 4：改 Init_entry.hpp（ThreadEntry 独立结构 + REGISTER_INIT 加 cleanup）
+[x] 阶段 4：改 Init_entry.cpp（失败回滚 + 线程启动失败检查）
+[~] 阶段 4：System_Shutdown / ThreadEntry.stop/join / REGISTER_THREAD_BASE —— **已删除**
+[x] 阶段 4：改 7 处注册点（REGISTER_INIT 补 cleanup 参数）
+[x] 阶段 4：编译验证
+[x] 阶段 4：上板验证启动日志顺序不变
+[x] 阶段 5：thread.hpp 加 TaskResult::Continue + Start(period) 重载 + RunPeriodic
+[x] 阶段 5：imu / remote / test 迁受管周期任务（Task 只写一拍）
+[x] 阶段 5：shell 保持裸任务（事件驱动，见 §5.8 选项 A）
+[x] 阶段 5：编译验证 + 上板验证 run 计数与周期
+[x] 阶段 6：InitEntry + REGISTER_INIT + 7 处调用点（cleanup）
+[x] 阶段 7：链接段改指针表
+[x] 目录分层：init/{startup,thread,irq}、shell/{log,var,thread}
+[x] 用户区同步：7 个工作区 78 处注册点改新签名（REGISTER_INIT 6 参 / REGISTER_THREAD 3 参）
+[x] 文档同步：framework/init/README.md、ARCHITECTURE.md
+[x] 记忆同步：project-state-snapshots
 ```
 
 ---
