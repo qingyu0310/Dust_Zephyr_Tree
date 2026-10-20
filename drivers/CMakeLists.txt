@@ -28,3 +28,21 @@ if(CONFIG_DUST_USB_DEVICE_HAL_STM32)
         ${CMAKE_CURRENT_SOURCE_DIR}/usb/hal/stm32
         ${FW_ROOT}/drivers/communication/stream/usb/interface)
 endif()
+
+# fatal 异常栈帧转储（芯片相关，2026-10-20）
+# 接口在 framework/cmd/fatal/esf_dump.hpp，实现在这里按厂商分目录
+if(CONFIG_DUST_FATAL_ESF_HPM)
+    target_sources(app PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/fatal/hpm/esf_dump_riscv.cpp)
+    target_include_directories(app PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/fatal/hpm
+        ${FW_ROOT}/cmd/fatal)
+endif()
+
+if(CONFIG_DUST_FATAL_ESF_STM32)
+    target_sources(app PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/fatal/st/esf_dump_cortex_m.cpp)
+    target_include_directories(app PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/fatal/st
+        ${FW_ROOT}/cmd/fatal)
+endif()

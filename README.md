@@ -874,9 +874,76 @@ if (!EXEC_FLASH_READ(flash::kPartCalib.offset, &calib, sizeof(calib))) {
 
 ## 10. 模块层：Remote 协议自动探测
 
-**这是整个架构里状态机最复杂的一块。**
+**这是整个架构里状态机最复杂的一块，但它的复杂全部锁在冷路径里。**
 
-### 10.1 用户不需要关心自己插的是哪种遥控器
+### 10.1 冷路径复杂，热路径直连
+
+这是 Remote 最核心的设计取舍：
+
+| 路径 | 频率 | 做什么 | 开销 |
+|---|---|---|---|
+| **冷路径**（Detecting） | 只在开机 / 掉线重连时 | 逐协议试探、切 UART 参数、累计命中 | 复杂但很少走 |
+| **热路径**（Locked） | 每帧都走（100Hz+） | `Decode()` → 发布 | **一条虚函数调用，直连** |
+
+**锁定之后，探测逻辑完全不参与**：
+
+```cpp
+void Remote::Dispatch()
+{
+    if (detect_.state == DetectState::Locked) {
+        HandleLocked();          // ← 热路径：while (帧够) { Decode(); Consume(); }
+    } else {
+        HandleDetecting();       // ← 冷路径：试探、切换、累计
+    }
+}
+```
+
+`HandleLocked` 里没有任何协议比较、没有任何状态机分支：
+
+```cpp
+while (frame_.frame_pos_ >= entry->frame_size)
+{
+    if (entry->protocol->Decode(...)) { ... }    // 直连当前协议
+    else { fail_count++; }
+
+    if (fail_count >= kUnlockFailLimit) { ResetDetect(); break; }
+}
+```
+
+**代价与收益**：
+
+- 代价：进入锁定时多一次判断（`state == Locked`）——每帧一次，可忽略
+- 收益：**锁定后每帧只做一次虚函数调用 + 一次 memmove**，与"直接用单协议写死"没有区别
+
+### 10.2 只有一个协议时，自动退化成正常逻辑
+
+这是这套设计的第二个精妙之处：**协议数从 1 变 N，代码路径不需要改**。
+
+```text
+注册 1 个协议（例如只编 SBUS）：
+  __remote_start ──► __remote_end          （只有 sbus 一项）
+        │
+        ├─ 第一次 Detecting：probe.entry = __remote_start（就是 sbus）
+        ├─ 校验通过 3 帧 → 锁定
+        └─ 之后永远在 Locked 分支
+     
+  如果一直校验不过：
+        └─ next = e + 1 ≥ __remote_end → probe 清零、帧缓冲清空 → 下一轮从头
+           （还是同一个协议，等价于"单协议 + 无限重试"）
+```
+
+**没有任何"if (协议数 == 1)"的特判**——退化是**数据结构自然导致**的：
+
+| 机制 | 单协议时的行为 | 多协议时的行为 |
+|---|---|---|
+| `probe.entry = __remote_start` | 指向唯一协议 | 指向第一个 |
+| `probe.retry >= need_hits` 换下一个 | `next >= __remote_end` → 重置从头 | 切到下一个协议 |
+| `SwitchProto()` | 切到自己（`Reconfigure` 同一套参数） | 切到不同参数 |
+| `Locked` 后的解码 | 完全相同 | 完全相同 |
+
+**结论**：单协议场景下，这套"通用探测"退化成"固定协议 + 持续重试"，**没有额外的分支开销，也没有额外的代码路径**。
+
+### 10.3 用户不需要关心自己插的是哪种遥控器
 
 ```text
 Detecting 状态：按顺序试探协议，命中 need_hits 帧后锁定
@@ -884,7 +951,7 @@ Locked 状态：解码；连续失败 kUnlockFailLimit 次 → 回 Detecting
 失联超时：返回 TaskResult::Retry → 钩子清零发布数据
 ```
 
-### 10.2 协议注册与编译选择的分工
+### 10.4 协议注册与编译选择的分工
 
 ```cpp
 // 协议实现用链接段注册
@@ -907,7 +974,7 @@ endif()
 
 `CONFIG_DUST_MOD_DEV_REMOTE_AUTO` 打开全部协议，适合"不知道会插什么"的场景；单开某个协议可以省 flash。
 
-### 10.3 自动探测状态机
+### 10.5 自动探测状态机（冷路径）
 
 ```cpp
 void Remote::HandleDetecting()
@@ -957,7 +1024,22 @@ void Remote::HandleDetecting()
 
 **`need_hits = 3` 的意义**：连续 3 帧校验通过才认为锁定，避免误锁。**VB 遥控器的帧格式允许随机数据碰巧通过一次校验**，但连续 3 次通过的概率极低。
 
-### 10.4 UART 自动重新初始化
+**注意 ⑤ 分支的两个出口**：
+
+```cpp
+if (next >= __remote_end) {
+    detect_.probe = {};           // 全部协议试完：清零候选
+    frame_.frame_pos_ = 0;        // 丢弃残帧
+    return;                       // 下一轮从 __remote_start 重新开始
+}
+```
+
+- 多协议：反复轮询所有协议，直到某个锁定
+- **单协议**：`next` 立刻越界 → 清零 → 下一轮还是它 → 等价于"对同一协议无限重试"
+
+这就是 §10.2 说的"自动退化"——**同一个分支，两种场景都正确**。
+
+### 10.6 UART 自动重新初始化
 
 不同协议的 UART 参数完全不同：
 
@@ -980,7 +1062,7 @@ void Remote::SwitchProto(const RemoteEntry *e)
 
 **`Reconfigure` 是原子的**——停 DMA、改参数、重启，中间不会收到半帧。
 
-### 10.5 解码失败与失联是两条路
+### 10.7 解码失败与失联是两条路
 
 | 场景 | 路径 | 结果 |
 |---|---|---|
@@ -989,7 +1071,7 @@ void Remote::SwitchProto(const RemoteEntry *e)
 
 **两条路的日志不同**（`redetect` vs 无），一眼能区分是"协议不对了"还是"遥控器关机了"。
 
-### 10.6 为双 UART 冗余预留的接口
+### 10.8 为双 UART 冗余预留的接口
 
 ```kconfig
 config DUST_MOD_DEV_REMOTE_DUAL

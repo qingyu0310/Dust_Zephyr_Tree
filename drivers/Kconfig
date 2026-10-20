@@ -25,3 +25,20 @@ config DUST_USB_DEVICE_HAL_STM32
       STM32F407 OTG FS 板卡底层 HAL（参考 STM32Cube USB_DEVICE CDC 设置，2026-08-13）。
       select USE_STM32_HAL_PCD* 触发 hal_stm32 模块编译 stm32f4xx_hal_pcd{,_ex}.c；
       USE_STM32_LL_USB 编译 stm32f4xx_ll_usb.c（HAL_PCD 依赖的 USB_* 底层函数）。
+
+# fatal 异常栈帧转储（芯片相关，2026-10-20）
+config DUST_FATAL_ESF_HPM
+    bool "HPM RISC-V esf dump"
+    default n
+    depends on RISCV
+    help
+      RISC-V 异常栈帧转储：mcause / mtval / mepc / mstatus / ra / a0 / a1。
+      fatal.cpp 内提供 __weak 空实现，未开启时链接不报错。
+
+config DUST_FATAL_ESF_STM32
+    bool "STM32 Cortex-M esf dump"
+    default n
+    depends on CPU_CORTEX_M
+    help
+      Cortex-M 异常栈帧转储：pc / xpsr / lr。
+      fatal.cpp 内提供 __weak 空实现，未开启时链接不报错。
