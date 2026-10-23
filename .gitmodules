@@ -19,3 +19,6 @@
 [submodule "project"]
 	path = project
 	url = https://github.com/qingyu0310/Dust_Zephyr_Architecture_Project.git
+[submodule "framework/shell"]
+	path = framework/shell
+	url = https://github.com/qingyu0310/Dust_Zephyr_Architecture_Shell.git
