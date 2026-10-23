@@ -371,7 +371,7 @@ void Run()
         {
             case Continue: break;
             case Retry:    retry_count++; hook...; break;
-            case Fatal:    fatal_count++; log; return;
+            case Exit:     DefaultHandle(this);            break;
         }
 
         if (!K_TIMEOUT_EQ(period_, K_NO_WAIT)) {
@@ -387,8 +387,8 @@ void Run()
 |---|---|
 | `for (;;)` | 外壳的循环 |
 | `k_msleep(N)` | 外壳的 `k_sleep(period_)` |
-| `if (error) { log; return; }` | `return TaskResult::Retry / Fatal` |
-| 重连逻辑 | 恢复钩子 |
+| `if (error) { log; return; }` | `return TaskResult::Retry / Exit` |
+| 重连逻辑 | Retry 钩子 |
 | 运行次数 / 耗时统计 | 外壳自动采集 |
 
 **效果**：`ImuManager::Task` 现在只做 **读一帧 → 控温 → 姿态解算**，然后 `return Continue`。没有任何线程管理代码。
@@ -397,16 +397,16 @@ void Run()
 
 | 返回值 | 外壳行为 | 统计 |
 |---|---|---|
-| `Continue` | 等一个周期再调 | — |
-| `Retry` | 调恢复钩子，`true` 则重进 Task 函数体 | `retry_count++` |
-| `Fatal` | 打 ERR 日志后退出线程 | `fatal_count++` |
+| `Continue` | 本拍成功，等一个周期再调 | — |
+| `Retry` | 先调 Retry 钩子，`true` 则重进 Task 函数体；`false` 则交给 `DefaultHandle` | `retry_count++` |
+| `Exit` | 跳过 Retry 钩子，直接交给 `DefaultHandle` 按线程策略处置 | — |
 
-**没有"任务主动结束"**——MCU 上线程常驻，不存在跑完就退的语义。
+`Retry` 与 `Exit` 的最终处置都由 `DefaultHandle` 按 `ThreadFaultPolicy` 决定（`Isolate` 自杀 / `Recover` 全杀），差别只在于要不要先给 Retry 钩子一次自救机会。
 
-### 5.4 恢复钩子：错误处理从业务里剥离
+### 5.4 Retry 钩子：错误处理从业务里剥离
 
 ```cpp
-static bool Recover(void* ctx)
+static bool OnRetry(void* ctx)
 {
     auto* self = static_cast<Remote*>(ctx);
 
@@ -1398,11 +1398,11 @@ static TaskResult Task(void* context)
 }
 
 /**
- * @brief 恢复钩子：可恢复错误后重新初始化设备
+ * @brief Retry 钩子：可恢复错误后重新初始化设备
  * @param context 未使用
  * @return true=重进任务；false=放弃
  */
-static bool Recover(void* context)
+static bool OnRetry(void* context)
 {
     (void)context;
     return xxx_.Reopen();
@@ -1412,7 +1412,7 @@ bool thread_init()  { return xxx_.Init(); }
 
 bool thread_start()
 {
-    thread_.SetRecoveryHook(Recover);
+    thread_.SetRetryHook(OnRetry);
     thread_.Start(Task, K_MSEC(10), ThreadPrio::High, nullptr, "xxx");
     return true;
 }
