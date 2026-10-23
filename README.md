@@ -643,7 +643,7 @@ K_min = max(1, B-1)  给定突发需求 B 所需最少帧数
 
 ```cpp
 // 各命令族在自己的文件里注册
-REGISTER_SHELL_CMD("thread", "thread list|show|pause|resume|reset",
+REGISTER_SHELL_CMD("thread", "thread list|show|pause|resume|exit|reset",
                    ThreadCmd::Process, thread);
 
 // shell.cpp 只负责遍历
