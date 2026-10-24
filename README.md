@@ -208,7 +208,7 @@ REGISTER_THREAD(thread_start, EarlyThread, HaltOnFail, "imu_start");
 // ① 结构体本体：普通 const 区
 static const InitEntry kInitEntry_thread_init = {
     thread_init, nullptr, &kTiming_thread_init,
-    InitStage::EarlyInit, InitLevel::High, InitFailPolicy::HaltOnFail, "imu_init"
+    InitStage::EarlyInit, InitLevel::High, StartFailPolicy::HaltOnFail, "imu_init"
 };
 
 // ② 指向它的指针：放进 .user_init 段
@@ -267,10 +267,10 @@ main()
 
 ```text
 [err] [boot] imu_init fail
-[wrn] [boot] output_init has no cleanup
+[wrn] [boot] output_init has no rollback
 [wrn] [boot] w25q128 rolled back
 [wrn] [boot] buzzer rolled back
-[wrn] [boot] dbg_init has no cleanup
+[wrn] [boot] dbg_init has no rollback
         （长鸣两声）
 ```
 
@@ -279,7 +279,7 @@ main()
 1. **依赖反转**：后初始化的项可能依赖先初始化的项，先关依赖方再关被依赖方
 2. **`dbg_init` 最后处理**：调试台是打日志的，它必须活到最后，否则回滚日志发不出去
 
-**没有 `cleanup` 的项也要打日志**（`has no cleanup`）——停机现场不能有盲区，要能一眼看出哪一项没被安全处理。
+**没有 `rollback` 的项也要打日志**（`has no rollback`）——停机现场不能有盲区，要能一眼看出哪一项没被安全处理。
 
 ### 4.5 停机为什么用 `k_msleep(1000)`
 
@@ -324,21 +324,7 @@ BOOT TIMING (total 42 ms, 8 items)
 
 **这是整个框架的核心。**
 
-### 5.1 两种写法
-
-**裸任务**（函数自己写循环）：
-
-```cpp
-static void Task(void*, void*, void*)
-{
-    for (;;) { k_msleep(10); /* 业务 */ }
-}
-thread_.Start(Task, ThreadPrio::High, nullptr, "foo");
-```
-
-适用：事件驱动线程（等信号量 / 等队列）、需要自维护状态机的线程。
-
-**受管任务**（任务只写一拍）：
+### 5.1 任务只写一拍
 
 ```cpp
 static TaskResult Task(void* context)
@@ -349,7 +335,7 @@ static TaskResult Task(void* context)
 thread_.Start(Task, K_MSEC(10), ThreadPrio::High, nullptr, "foo");
 ```
 
-适用：固定周期循环。
+循环、周期等待、统计、故障处置全部由外壳负责。事件驱动线程不用另写循环，把阻塞点放进 `Task`、周期传 `K_NO_WAIT` 即可。
 
 ### 5.2 外壳替 Task 做的事
 
@@ -420,6 +406,11 @@ static bool OnRetry(void* ctx)
 }
 ```
 
+钩子在**编译期用注册宏**声明，不再调 setter：
+
+```cpp
+```
+
 **契约**：
 
 1. Task 每拍**重新进入函数**，跨拍状态必须放在函数外（`static` 或类成员）
@@ -430,10 +421,10 @@ static bool OnRetry(void* ctx)
 
 ```text
 thread list
-THREAD     STATE     RUN      RETRY   FATAL   DROP    STACK
-imu        running   12453    0       0       0       512
-remote     running   9871     3       0       0       744
-test       running   4521     0       0       0       1900
+THREAD     STATE     RUN      RETRY   DROP    STACK
+imu        running   12453    0       0       512
+remote     running   9871     3       0       744
+test       running   4521     0       0       1900
 ```
 
 ```text
@@ -441,12 +432,12 @@ thread show imu
 imu:
   state        running
   run          12453
-  retry/fatal  0/0
+  retry        0
   drop         0
   last         1.002 ms
   max          2.310 ms
   total        12492.4 ms
-  stack        512 / 2048 B (25.0% used)
+  stack        512 B unused
 ```
 
 **口径**：`run_ns` / `max_run_ns` 只测 **Task 函数体**，不含 `k_sleep`、不含统计本身。
@@ -475,6 +466,7 @@ class ThreadBase          // 非模板基类
     virtual void        Pause() = 0;
     virtual void        Resume() = 0;
     virtual bool        Paused() const = 0;
+    virtual void        Exit() = 0;
 };
 ```
 
@@ -1412,7 +1404,6 @@ bool thread_init()  { return xxx_.Init(); }
 
 bool thread_start()
 {
-    thread_.SetRetryHook(OnRetry);
     thread_.Start(Task, K_MSEC(10), ThreadPrio::High, nullptr, "xxx");
     return true;
 }
@@ -1429,7 +1420,7 @@ REGISTER_THREAD(thread_start, EarlyThread, HaltOnFail, "xxx_start");
 [ ] project/Kconfig 有 TRD_XXX，select 了依赖的 DUST_* 符号
 [ ] project/thread/CMakeLists.txt 有 if(CONFIG_TRD_XXX) 块
 [ ] trd_xxx.cpp 里有 REGISTER_INIT + REGISTER_THREAD
-[ ] REGISTER_INIT 六个参数齐全（cleanup 可为 nullptr）
+[ ] REGISTER_INIT 六个参数齐全（rollback 可为 nullptr）
 [ ] REGISTER_THREAD 四个参数（fn / stage / fail / name）
 [ ] Task 返回 TaskResult，没有 for(;;)
 [ ] 跨拍状态在函数外（static 或 namespace 级对象）

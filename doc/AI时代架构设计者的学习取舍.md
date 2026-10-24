@@ -176,7 +176,7 @@ REGISTER_INIT()
 REGISTER_THREAD()
 InitStage
 ThreadStage
-InitFailPolicy
+StartFailPolicy
 target_sources(app)
 ZEPHYR_EXTRA_MODULES
 select DUST_*
@@ -327,7 +327,7 @@ CI 是否需要 HPM tree patch？
 失败是否只需要降级？
 ```
 
-这会影响 `InitFailPolicy`、日志级别、重试策略和业务线程是否继续跑。
+这会影响 `StartFailPolicy`、日志级别、重试策略和业务线程是否继续跑。
 
 ---
 
@@ -498,7 +498,7 @@ REGISTER_INIT 注册到哪里
 REGISTER_THREAD 注册到哪里
 InitStage / ThreadStage 怎么分
 InitLevel 怎么排序
-InitFailPolicy 怎么影响失败处理
+StartFailPolicy 怎么影响失败处理
 链接段如何被收集
 System_Startup 如何遍历
 ```
