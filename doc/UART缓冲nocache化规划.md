@@ -81,22 +81,61 @@ sys_cache_data_invalidate_range(rx_buf_, len);    // RX 后：作废
 
 ### 3.2 具体改法
 
+> ⚠️ **2026-10-25 实测修正**：`__nocache` 展开为 `__attribute__((section(...)))`，**只能用于函数或全局变量，不能用于类成员**。直接写在 `UartDma` 的成员声明上编译报错：
+>
+> ```text
+> error: 'section' attribute only applies to functions, global variables,
+>        Objective-C methods, and Objective-C properties
+> ```
+>
+> 所以**不能**用"给成员加 `__nocache`"的方式实现。
+
+#### 可行形态：整类实例放 `nocache_load` 段
+
+`__nocache` 只能标在**全局/静态变量**上。`UartDma` 的实例全部是 `static` 局部变量，所以标在**实例**上：
+
 ```cpp
-#include <zephyr/linker/section_tags.h>     // __nocache
-
-private:
-    static constexpr uint16_t kMaxBufSize = 256;
-
-    __nocache uint8_t dma_buf_[2][kMaxBufSize] {};   // 硬件 DMA 双缓冲（DMA 直写，必须 nocache）
-    uint8_t  cur_buf_ = 0;
-    bool     buf_free_[2] = {true, true};
-
-    BipBuffer<kMaxBufSize * 2> rx_bip_ {};           // CPU 侧软件队列，DMA 不访问，保持普通 RAM
-
-    __nocache uint8_t tx_data_[kMaxBufSize] {};      // 发送缓冲（DMA 直读，必须 nocache）
-    uint8_t* tx_buf_ = tx_data_;
-    atomic_t tx_busy_ = ATOMIC_INIT(0);
+// shell.cpp / trd_remote.cpp 等调用点
+__nocache_load static UartDma rx {};
 ```
+
+> ⚠️ **必须用 `__nocache_load` 而不是 `__nocache`（2026-10-25 踩坑）**
+>
+> `__nocache` 映射到 `.nocache`（**noload** 段，`zephyr.map` 里 `nocache 0x1200000 0x5c0` 无 load address），初值**不会被从 ROM 复制到 RAM**。`UartDma` 带初值成员：
+>
+> - `uint8_t* tx_buf_ = tx_data_;` → 野指针
+> - `bool buf_free_[2] = {true, true};` → 垃圾
+> - `atomic_t tx_busy_ / ready_ = ATOMIC_INIT(0);` → 垃圾
+>
+> 结果：`Send()` 里 `uart_tx(dev_, tx_buf_, len, 0)` 传野指针 → **`KERNEL_PANIC (reason=4)`**。
+>
+> `__nocache_load` 映射到 `.nocache_load`（**有 load address**，`nocache_load 0x12005c0 0x240 load address 0x80013090`），启动时从 ROM 拷初值，与普通 `.data` 同机制。
+
+这样整个对象落在 nocache 区。**副作用**：`rx_bip_`（512 B）也变成 non-cacheable，CPU 读写它稍慢，但换来零维护、绝对正确。
+
+#### 另一种形态：缓冲改成指针 + 外部 nocache 存储
+
+```cpp
+// uart.hpp
+uint8_t* dma_buf_[2] = {nullptr, nullptr};
+uint8_t* tx_data_ = nullptr;
+
+// uart.cpp 文件作用域
+__nocache static uint8_t g_dma_buf_storage[2][UartDma::kMaxBufSize];
+__nocache static uint8_t g_tx_storage[UartDma::kMaxBufSize];
+
+// Init() 里绑定
+dma_buf_[0] = g_dma_buf_storage[0];
+dma_buf_[1] = g_dma_buf_storage[1];
+tx_data_    = g_tx_storage;
+tx_buf_     = tx_data_;
+```
+
+**代价**：多个 `UartDma` 实例（当前 shell 一个、remote 一个）会**共用同一块存储**，必须改成每实例一份（按实例数乘以 `static` 数组，或数组索引进 `dma_buf_[i]`）。改动面大、易错。
+
+#### 结论
+
+**优先选"整类实例放 nocache_load 段"**（形态一）：一处声明、零内部改动、每实例独立，且初值正确加载。代价只是多浪费 512 B 的 non-cacheable RAM。
 
 ### 3.3 前置条件（已在当前工程满足）
 
@@ -125,15 +164,16 @@ assert((start_addr & (length - 1U)) == 0U);     // 起始地址必须按长度�
 
 ## 4 执行步表
 
-> **拆成 4 步，每次只执行一步。**
+> **拆成 5 步，每次只执行一步。**
 > 用户说"开始第 N 步"= 只改表格里那一个文件，改完停下报告，等"继续"。
 
 | 步 | 文件 | 动作 | 依赖前置 | 连带 |
 |----|------|------|----------|------|
-| **1** | `framework/drivers/communication/stream/uart/uart.hpp` | 加 `#include <zephyr/linker/section_tags.h>`；`dma_buf_` 与 `tx_data_` 前加 `__nocache`（§3.2） | 无 | 无（`__nocache` 在未开 NOCACHE_MEMORY 时展开为空） |
-| **2** | `uhpm6e00evk_defconfig` | 删除 `CONFIG_DCACHE=n`（恢复默认 `y`） | 步 1 | 无 |
-| **3** | 全量检查 | `grep -n "__nocache" uart.hpp` 应有 2 处；确认 `rx_bip_` **没有**加 | 步 1、2 | 无 |
-| **4** | 文档回填 | `framework/drivers/README.md`（如有 UART 章节）说明"UART DMA 缓冲必须 nocache"；`doc/线程编写指南.md` 不涉及 | 步 3 | 无 |
+| **1** | `framework/shell/shell.cpp` | `static UartDma rx {};` 前加 `__nocache_load`；文件加 `#include <zephyr/linker/section_tags.h>` | 无 | 无（未开 NOCACHE_MEMORY 时展开为空） |
+| **2** | `project/thread/remote/trd_remote.cpp` | `static UartDma rx {};` 前加 `__nocache_load` | 步 1 | 无 |
+| **3** | `uhpm6e00evk_defconfig` | 删除 `CONFIG_DCACHE=n`（恢复默认 `y`） | 步 1、2 | 无 |
+| **4** | 全量检查 | `grep -rn "__nocache_load" framework project` 应有 2 处（shell / trd_remote）；**确认没有裸 `__nocache`** | 步 1~3 | 无 |
+| **5** | 文档回填 | `framework/drivers/README.md` 说明"UartDma 实例必须 `__nocache`（开了 D-Cache 的板卡）" | 步 4 | 无 |
 
 **编译状态**：全程可编译。
 
@@ -145,7 +185,7 @@ assert((start_addr & (length - 1U)) == 0U);     // 起始地址必须按长度�
 
 | # | 场景 | 预期 |
 |---|------|------|
-| 1 | `dust build uhpm6e00evk -p` 后看 map | `.nocache` 区非 0，约 1 KB；`_nocache_ram_size` 是 2 的幂 |
+| 1 | `dust build uhpm6e00evk -p` 后看 map | `.nocache_load` 段**有 load address**（如 `load address 0x80013090`）；`_nocache_ram_size` 是 2 的幂 |
 | 2 | `dust flash` + 串口接收 | 收到 `teee\r\n` 等真实文本，**不再是全 0** |
 | 3 | 连续发送 1 分钟 | 无丢帧、无错乱（验证 tx 缓冲写入被 DMA 正确读到） |
 | 4 | 接收 PC 发来的数据（remote/回环） | `rx_bip_` 内容正确（验证 `dma_buf_` → `rx_bip_` 的 CPU 拷贝正常） |
