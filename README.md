@@ -636,7 +636,7 @@ K_min = max(1, B-1)  给定突发需求 B 所需最少帧数
 ```cpp
 // 各命令族在自己的文件里注册
 REGISTER_SHELL_CMD("thread", "thread list|show|pause|resume|exit|reset",
-                   ThreadCmd::Process, thread);
+                   ThreadCmd::Process);
 
 // shell.cpp 只负责遍历
 void Shell::ProcessLine(uint8_t* line)
@@ -661,19 +661,16 @@ void Shell::ProcessLine(uint8_t* line)
 
 链接段的性质：**实现和注册是同一行代码**，没有遗忘的可能。
 
-### 7.3 四参数宏的 `ident_`
+### 7.3 变量名由宏自己生成
 
 ```cpp
-REGISTER_SHELL_CMD(name_, help_, handler_, ident_)
+REGISTER_SHELL_CMD(name_, help_, handler_)
 ```
 
-**为什么要独立的 `ident_`**：`handler_` 可能是 `ThreadCmd::Process` 这种带 `::` 的限定名，不能直接拼进标识符（`kShellCmd_ThreadCmd::Process` 非法）。
+变量名用 `_CONCAT(kShellCmd_, __COUNTER__)`（`<zephyr/toolchain.h>`，与 `REGISTER_SHELL_VAR` 同款）：`__COUNTER__` 保证唯一，调用方不必再传一个标识符。
 
-拆开后：
+`handler_` 可能是 `ThreadCmd::Process` 这种带 `::` 的限定名，不能直接拼进标识符（`kShellCmd_ThreadCmd::Process` 非法），所以用 `__COUNTER__` 而不是拼 handler 名。
 
-- `handler_` 只出现在初始化列表
-- `ident_` 只用于生成变量名
-- `nm` 里能看到 `kShellCmd_thread` 这种人能读的名字
 
 ### 7.4 段边界必须声明为 C 符号
 
