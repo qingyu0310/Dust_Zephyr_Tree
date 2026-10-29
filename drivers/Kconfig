@@ -26,6 +26,56 @@ config DUST_USB_DEVICE_HAL_STM32
       select USE_STM32_HAL_PCD* 触发 hal_stm32 模块编译 stm32f4xx_hal_pcd{,_ex}.c；
       USE_STM32_LL_USB 编译 stm32f4xx_ll_usb.c（HAL_PCD 依赖的 USB_* 底层函数）。
 
+# EtherCAT 板卡底层 HAL（2026-10-29 从 sdk_glue_user 下沉，照 USB 分层）
+# PHY 驱动由 dts 的 compatible 决定是否编译：板卡 dts 里写了哪个节点就编哪个。
+config DUST_ECAT_HAL_HPM
+    bool "HPMicro ESC EtherCAT HAL"
+    default n
+    depends on CLOCK_CONTROL && GPIO && PINCTRL
+    select HPM_ESC
+    select DUST_ECAT_PHY_JL1111   if DT_HAS_HPMICRO_ECAT_PHY_JL1111_ENABLED
+    select DUST_ECAT_PHY_RTL8201F if DT_HAS_HPMICRO_ECAT_PHY_RTL8201F_ENABLED
+    select DUST_ECAT_PHY_TJA1101B if DT_HAS_HPMICRO_ECAT_PHY_TJA1101B_ENABLED
+    help
+      HPMicro 片内 ESC 的 EtherCAT 硬件抽象层：ESC 设备驱动 + SSC 端口层 + PHY 驱动。
+      PHY 驱动按芯片分目录（hal/ports/phy/<芯片名>/），由 dts 的 compatible 选中。
+
+# HPMicro 片内 ESC 设备驱动（esc_hpmicro.c）
+config HPM_ESC
+    bool "HPMicro on-chip EtherCAT slave controller"
+    default n
+    depends on DT_HAS_HPMICRO_HPM_ESC_ENABLED
+    help
+      HPMicro 片内 ESC 的 Zephyr 设备驱动：寄存器读写、MDIO、中断、PHY 复位、
+      EEPROM 模式配置。由 DUST_ECAT_HAL_HPM 或业务门禁 select。
+
+# SII 存储方式：true=Flash 分区模拟，false=板上 I2C EEPROM
+config HPM_ESC_EEPROM_EMULATION
+    bool "Use Flash-backed SII emulation instead of on-board I2C EEPROM"
+    depends on HPM_ESC
+    default n
+    help
+      true  = SII 存到 Flash 分区 ethercat_eeprom_partition（板上无 EEPROM 时用）
+      false = 用板上 I2C EEPROM（如 CAT24C128），需要 I2C 驱动与 ESC 的 SDA/SCL 引脚
+
+config DUST_ECAT_PHY_JL1111
+    bool "JL1111 EtherCAT PHY"
+    help
+      JL1111 100BASE-TX PHY（HPM6E00EVK 的 PORTA/PORTB）。
+      由 dts 节点 compatible = "hpmicro,ecat-phy-jl1111" 自动选中。
+
+config DUST_ECAT_PHY_RTL8201F
+    bool "RTL8201F EtherCAT PHY"
+    help
+      RTL8201F 100BASE-TX PHY（HPM5E31 自定义板的 PORTA）。
+      由 dts 节点 compatible = "hpmicro,ecat-phy-rtl8201f" 自动选中。
+
+config DUST_ECAT_PHY_TJA1101B
+    bool "TJA1101B EtherCAT PHY"
+    help
+      TJA1101B 100BASE-T1 PHY（HPM5E31 自定义板的 PORTB）。
+      由 dts 节点 compatible = "hpmicro,ecat-phy-tja1101b" 自动选中。
+
 # fatal 异常栈帧转储（芯片相关，2026-10-20）
 config DUST_FATAL_ESF_HPM
     bool "HPM RISC-V esf dump"
