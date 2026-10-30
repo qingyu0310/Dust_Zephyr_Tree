@@ -2,10 +2,11 @@
  * @file ecat_hal_hpm.cpp
  * @author qingyu
  * @brief HPMicro ESC HAL 实现
- * @version 0.1
+ * @version 0.2
  * @date 2026-10-31
  *
  * @copyright Copyright (c) 2026
+ *
  */
 
 #include "ecat_hal_hpm.hpp"
@@ -15,7 +16,6 @@
 #include <zephyr/kernel.h>
 
 #include "log.hpp"
-#include "spec/ecat_registers.hpp"
 
 extern "C" {
 
@@ -24,73 +24,57 @@ extern "C" {
 #include "ecat_config.h"
 
 #if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+
 #include "ecat_e2p_emulation.h"
 #else
-/* 板载 EEPROM 模式的装载接口，由端口层提供 */
-hpm_stat_t esc_eeprom_content_init(void);
+hpm_stat_t esc_eeprom_content_init(void);		// 板载 EEPROM 模式的装载接口，由端口层提供
+
 #endif
 
+}
+
+/**
+ * @brief 厂商 C 侧诊断输出入口
+ * @param text 已格式化的文本
+ */
+extern "C" void ecat_port_log(const char* text)
+{
+	DUST_LOG_RAW("%s", text);
 }
 
 namespace ecat {
 
 namespace {
 
-	const struct device* const kEscDevice = DEVICE_DT_GET(DT_NODELABEL(esc0));
+constexpr uint16_t kSiiChunkSize = 8;		// SII 每次搬运的字节数（Flash 模拟的最小擦写单位）
 
-	/** 中断号编码：`user_data` 只带低 8 位 */
-	constexpr uintptr_t kIrqMask = 0xFFU;
-
-	/** 每次 SII 读写搬运的字节数上限（Flash 模拟的最小擦写单位） */
-	constexpr uint16_t kSiiChunkSize = 8;
-
-	EcatEscHpm* g_instance = nullptr;
-
-	/**
-	 * @brief 中断号到事件的映射
-	 */
-	EcatEvent MapIrq(enum hpm_esc_irq irq)
-	{
-		switch (irq) 
-		{
-			case HPM_ESC_IRQ_PDI:   return EcatEvent::Pdi;
-			case HPM_ESC_IRQ_SYNC0: return EcatEvent::Sync0;
-			case HPM_ESC_IRQ_SYNC1: return EcatEvent::Sync1;
-			case HPM_ESC_IRQ_RESET:
-			default:                return EcatEvent::Reset;
-		}
-	}
-
-	EcatEscHpm* g_timer_instance = nullptr;
-
-	/**
-	 * @brief 1 ms 定时器回调
-	 *
-	 * 定时器不归 ESC 端口管（它属于协议核心的节拍），
-	 * 但 Zephyr 的 `k_timer` 需要静态回调，所以放在这里再转发。
-	 */
-	void OnMillisecond(struct k_timer* timer)
-	{
-		(void)timer;
-
-		if (g_timer_instance != nullptr) {
-			g_timer_instance->DispatchTick();
-		}
-	}
-
-	K_TIMER_DEFINE(g_ms_timer, OnMillisecond, nullptr);
-}
-
-EcatEscHpm::EcatEscHpm()
-	: dev_(kEscDevice)
+/**
+ * @brief 1 ms 定时器回调
+ *
+ * k_timer 需要静态回调，这里转发给当前实例。
+ *
+ * @param timer 定时器句柄（未使用）
+ */
+void OnMillisecond(struct k_timer* timer)
 {
+	EcatEscHpm* instance = static_cast<EcatEscHpm*>(k_timer_user_data_get(timer));
+
+	if (instance != nullptr) {
+		instance->DispatchTick();
+	}
 }
 
-EcatEscHpm::~EcatEscHpm()
-{
-	Close();
+K_TIMER_DEFINE(g_ms_timer, OnMillisecond, nullptr);
+
 }
 
+/**
+ * @brief 打开 ESC 设备并完成硬件初始化
+ * @param config  端口配置（当前未使用，SII 介质由编译期分支决定）
+ * @param handler 事件回调
+ * @param context 回调上下文
+ * @return true=成功
+ */
 bool EcatEscHpm::Open(const Config& config, EventHandler handler, void* context)
 {
 	(void)config;
@@ -105,23 +89,16 @@ bool EcatEscHpm::Open(const Config& config, EventHandler handler, void* context)
 	handler_ = handler;
 	context_ = context;
 
-	/*
-	 * 顺序照已验证的参考实现：
-	 *   1) 先关中断（此时还没有回调，但要保证 ESC 不产生事件）
-	 *   2) 挂 PDI / SYNC0 / SYNC1 / RESET 四个回调
-	 *   3) 硬件初始化（SII 介质、EEPROM 模式、ESC 本体）
-	 */
+	// 顺序照已验证的参考实现：先关中断 → 挂四个回调 → 硬件初始化
 	hpm_esc_irq_enable(dev_, false);
 
-	g_instance = this;
-
-	for (uintptr_t irq = 0; irq < HPM_ESC_IRQ_COUNT; ++irq) {
-		hpm_esc_set_irq_callback(dev_, static_cast<enum hpm_esc_irq>(irq), OnIrq, reinterpret_cast<void*>(irq & kIrqMask));
-	}
+	hpm_esc_set_irq_callback(dev_, HPM_ESC_IRQ_PDI, OnPdiIrq, this);
+	hpm_esc_set_irq_callback(dev_, HPM_ESC_IRQ_SYNC0, OnSync0Irq, this);
+	hpm_esc_set_irq_callback(dev_, HPM_ESC_IRQ_SYNC1, OnSync1Irq, this);
+	hpm_esc_set_irq_callback(dev_, HPM_ESC_IRQ_RESET, OnResetIrq, this);
 
 	if (!HardwareInit()) {
-		ECAT_LOG("ecat: hardware init failed\n");
-		g_instance = nullptr;
+		DUST_LOG_RAW("ecat: hardware init failed");
 		return false;
 	}
 
@@ -136,33 +113,38 @@ bool EcatEscHpm::Open(const Config& config, EventHandler handler, void* context)
 bool EcatEscHpm::HardwareInit()
 {
 	// 两种 SII 介质在编译期分叉，GetSiiMode() 返回同一分支
-#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
-	if (ecat_flash_eeprom_init() != 0) {
-		ECAT_LOG("ecat: flash eeprom init failed\n");
-		return false;
-	}
+	#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+	{
+		if (ecat_flash_eeprom_init() != 0) {
+			DUST_LOG_RAW("ecat: flash eeprom init failed");
+			return false;
+		}
 
-	hpm_esc_configure_eeprom(dev_, true, false);
-	ecat_eeprom_emulation_reload_response();
-#else
-	if (esc_eeprom_content_init() != 0) {
-		ECAT_LOG("ecat: i2c eeprom content init failed\n");
-		return false;
+		hpm_esc_configure_eeprom(dev_, true, false);
+		ecat_eeprom_emulation_reload_response();
 	}
+	#else
+	{
+		if (esc_eeprom_content_init() != 0) {
+			DUST_LOG_RAW("ecat: i2c eeprom content init failed");
+			return false;
+		}
 
-	init_esc_eeprom_pin();
-	hpm_esc_configure_eeprom(dev_, false, ECAT_EEPROM_SIZE_BYTE > 256);
-#endif
+		init_esc_eeprom_pin();
+		hpm_esc_configure_eeprom(dev_, false, ECAT_EEPROM_SIZE_BYTE > 256);
+	}
+	#endif
 
 	sii_ready_ = true;
 
 	const int eeprom_status = hpm_esc_check_eeprom(dev_);
 
-	if (eeprom_status != 0) {
+	if (eeprom_status != 0) 
+	{
 		if (eeprom_status == -EBADMSG) {
-			ECAT_LOG("ecat: eeprom checksum error, communication still possible\n");
+			DUST_LOG_RAW("ecat: eeprom checksum error, communication still possible");
 		} else {
-			ECAT_LOG("ecat: eeprom loading failed\n");
+			DUST_LOG_RAW("ecat: eeprom loading failed");
 			return false;
 		}
 	}
@@ -178,6 +160,9 @@ bool EcatEscHpm::HardwareInit()
 	return true;
 }
 
+/**
+ * @brief 停止事件并关闭端口
+ */
 void EcatEscHpm::Close()
 {
 	if (!opened_) {
@@ -185,10 +170,12 @@ void EcatEscHpm::Close()
 	}
 
 	StopEvents();
-	g_instance = nullptr;
 	opened_ = false;
 }
 
+/**
+ * @brief 启动 1 ms 节拍与 ESC 中断
+ */
 void EcatEscHpm::StartEvents()
 {
 	if (!opened_) {
@@ -196,13 +183,16 @@ void EcatEscHpm::StartEvents()
 	}
 
 	// 1 ms 节拍：协议栈的超时/看门狗都靠它
-	g_timer_instance = this;
+	k_timer_user_data_set(&g_ms_timer, this);
 	k_timer_start(&g_ms_timer, K_MSEC(1), K_MSEC(1));
 
 	hpm_esc_irq_enable(dev_, true);
 	irq_enabled_ = true;
 }
 
+/**
+ * @brief 关闭 ESC 中断并停止 1 ms 节拍
+ */
 void EcatEscHpm::StopEvents()
 {
 	if (!opened_) {
@@ -212,57 +202,64 @@ void EcatEscHpm::StopEvents()
 	hpm_esc_irq_enable(dev_, false);
 	irq_enabled_ = false;
 	k_timer_stop(&g_ms_timer);
-
-	if (g_timer_instance == this) {
-		g_timer_instance = nullptr;
-	}
+	k_timer_user_data_set(&g_ms_timer, nullptr);
 }
 
+/**
+ * @brief 读 ESC 地址空间
+ * @param address ESC 地址
+ * @param data    目标缓冲
+ * @param length  字节数
+ */
 void EcatEscHpm::Read(uint16_t address, void* data, uint16_t length)
 {
-#if defined(HPM_IP_FEATURE_ESC_BYTE_READ) && HPM_IP_FEATURE_ESC_BYTE_READ
-	hpm_esc_read(dev_, address, data, length);
-#else
-	/*
-	 * 不支持逐字节读时，硬件只能按 4 字节对齐整块读。
-	 * 非对齐地址要先读进临时缓冲，再按偏移拷出——直接 `& ~3` 整块读会让
-	 * 调用方拿到前移了 address & 3 字节的错位数据。
-	 */
-	const uint16_t offset = static_cast<uint16_t>(address & 3U);
-
-	if (offset == 0) {
-		hpm_esc_read_block(dev_, address, data, length);
-		return;
-	}
-
-	uint8_t scratch[4] = {};
-	uint8_t* destination = static_cast<uint8_t*>(data);
-	uint16_t remaining = length;
-	uint16_t aligned = static_cast<uint16_t>(address & ~3U);
-	uint16_t skip = offset;
-
-	while (remaining > 0)
+	#if defined(HPM_IP_FEATURE_ESC_BYTE_READ) && HPM_IP_FEATURE_ESC_BYTE_READ
 	{
-		hpm_esc_read_block(dev_, aligned, scratch, sizeof(scratch));
+		hpm_esc_read(dev_, address, data, length);
+	}
+	#else
+	{
+		// 硬件只能按 4 字节对齐整块读；非对齐地址先读进临时缓冲再按偏移拷出
+		const uint16_t offset = static_cast<uint16_t>(address & 3U);
 
-		for (uint8_t i = skip; i < 4 && remaining > 0; ++i)
-		{
-			*destination = scratch[i];
-			++destination;
-			--remaining;
+		if (offset == 0) {
+			hpm_esc_read_block(dev_, address, data, length);
+			return;
 		}
 
-		skip = 0;
-		aligned = static_cast<uint16_t>(aligned + 4);
+		uint8_t scratch[4] = {};
+		uint8_t* destination = static_cast<uint8_t*>(data);
+		uint16_t remaining = length;
+		uint16_t aligned = static_cast<uint16_t>(address & ~3U);
+		uint16_t skip = offset;
+
+		while (remaining > 0)
+		{
+			hpm_esc_read_block(dev_, aligned, scratch, sizeof(scratch));
+
+			for (uint8_t i = skip; i < 4 && remaining > 0; ++i)
+			{
+				*destination = scratch[i];
+				++destination;
+				--remaining;
+			}
+
+			skip = 0;
+			aligned = static_cast<uint16_t>(aligned + 4);
+		}
 	}
-#endif
+	#endif
 }
 
+/**
+ * @brief 写 ESC 地址空间
+ * @param address ESC 地址
+ * @param data    源缓冲
+ * @param length  字节数
+ */
 void EcatEscHpm::Write(uint16_t address, const void* data, uint16_t length)
 {
-	/*
-	 * 非对齐写必须读-改-写，否则 `& ~3` 会把前面对齐块里的其他字节一起写坏。
-	 */
+	// 非对齐写必须读-改-写，否则对齐块里的其他字节会被一起写坏
 	const uint16_t offset = static_cast<uint16_t>(address & 3U);
 
 	if (offset == 0) {
@@ -295,149 +292,143 @@ void EcatEscHpm::Write(uint16_t address, const void* data, uint16_t length)
 	}
 }
 
-uint16_t EcatEscHpm::ReadAlEvent()
-{
-	uint16_t value = 0;
-
-	hpm_esc_read(dev_, reg::kAlEvent, &value, sizeof(value));
-	return value;
-}
-
-bool EcatEscHpm::MdioRead(uint8_t phy, uint8_t reg, uint16_t* value)
-{
-	return hpm_esc_mdio_read(dev_, phy, reg, value) == 0;
-}
-
-bool EcatEscHpm::MdioWrite(uint8_t phy, uint8_t reg, uint16_t value)
-{
-	return hpm_esc_mdio_write(dev_, phy, reg, value) == 0;
-}
-
-void EcatEscHpm::SetLinkState(uint8_t port, bool up)
-{
-	hpm_esc_set_link_state(dev_, port, up);
-}
-
-EcatEsc::SiiMode EcatEscHpm::GetSiiMode() const
-{
-#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
-	return SiiMode::Emulated;
-#else
-	return SiiMode::OnBoard;
-#endif
-}
-
+/**
+ * @brief 读 SII 内容
+ * @param word_address 起始字地址
+ * @param data         目标缓冲
+ * @param length       字节数
+ * @return true=成功
+ */
 bool EcatEscHpm::ReadSiiWord(uint32_t word_address, uint8_t* data, uint16_t length)
 {
 	if (!sii_ready_ || data == nullptr) {
 		return false;
 	}
 
-#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
-	/*
-	 * 后端一次固定搬 kSiiChunkSize(8) 字节，忽略请求长度。
-	 * 直接用 data + offset 当目标会在 length 小于 8 时越界写，所以先搬到
-	 * scratch，再按请求长度拷出。
-	 */
-	for (uint16_t offset = 0; offset < length; offset = static_cast<uint16_t>(offset + kSiiChunkSize))
+	#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
 	{
-		uint8_t scratch[kSiiChunkSize] = {};
+		// 后端固定搬 kSiiChunkSize 字节，忽略请求长度；先搬到 scratch 再按请求长度拷出
+		for (uint16_t offset = 0; offset < length; offset = static_cast<uint16_t>(offset + kSiiChunkSize))
+		{
+			uint8_t scratch[kSiiChunkSize] = {};
 
-		if (ecat_flash_eeprom_read(word_address + offset, scratch) != 0) {
-			return false;
+			if (ecat_flash_eeprom_read(word_address + offset, scratch) != 0) {
+				return false;
+			}
+
+			const uint16_t remaining = static_cast<uint16_t>(length - offset);
+			const uint16_t copy = (remaining < kSiiChunkSize) ? remaining : kSiiChunkSize;
+
+			for (uint16_t i = 0; i < copy; ++i) {
+				data[offset + i] = scratch[i];
+			}
 		}
+		return true;
 
-		const uint16_t remaining = static_cast<uint16_t>(length - offset);
-		const uint16_t copy = (remaining < kSiiChunkSize) ? remaining : kSiiChunkSize;
-
-		for (uint16_t i = 0; i < copy; ++i) {
-			data[offset + i] = scratch[i];
-		}
 	}
-	return true;
-#else
-	/*
-	 * 板载 EEPROM：ESC 自己走 I2C 主控，应用层在运行期不接管。
-	 * 这里的"成功"表示"不需要应用参与"，不是"读到了数据"。
-	 */
-	(void)word_address;
-	(void)length;
-	return true;
-#endif
+	#else
+	{
+		// 板载 EEPROM：ESC 自己走 I2C 主控，应用层不需要参与
+		(void)word_address;
+		(void)length;
+		return true;
+	}
+	#endif
 }
 
+/**
+ * @brief 写 SII 内容
+ * @param word_address 起始字地址
+ * @param data         源缓冲
+ * @param length       字节数
+ * @return true=成功
+ */
 bool EcatEscHpm::WriteSiiWord(uint32_t word_address, const uint8_t* data, uint16_t length)
 {
 	if (!sii_ready_ || data == nullptr) {
 		return false;
 	}
 
-#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
-	/*
-	 * 后端一次固定写 kSiiChunkSize(8) 字节。请求长度不足 8 时要先读出原值、
-	 * 只覆盖请求范围内的字节，否则会把相邻数据一起写掉。
-	 */
-	for (uint16_t offset = 0; offset < length; offset = static_cast<uint16_t>(offset + kSiiChunkSize))
+	#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
 	{
-		uint8_t scratch[kSiiChunkSize] = {};
-		const uint16_t remaining = static_cast<uint16_t>(length - offset);
-		const uint16_t copy = (remaining < kSiiChunkSize) ? remaining : kSiiChunkSize;
+		// 后端固定写 kSiiChunkSize 字节；请求不足一块时先读出原值，只覆盖请求范围
+		for (uint16_t offset = 0; offset < length; offset = static_cast<uint16_t>(offset + kSiiChunkSize))
+		{
+			uint8_t scratch[kSiiChunkSize] = {};
+			const uint16_t remaining = static_cast<uint16_t>(length - offset);
+			const uint16_t copy = (remaining < kSiiChunkSize) ? remaining : kSiiChunkSize;
 
-		if (copy < kSiiChunkSize) {
-			if (ecat_flash_eeprom_read(word_address + offset, scratch) != 0) {
+			if (copy < kSiiChunkSize) {
+				if (ecat_flash_eeprom_read(word_address + offset, scratch) != 0) {
+					return false;
+				}
+			}
+
+			for (uint16_t i = 0; i < copy; ++i) {
+				scratch[i] = data[offset + i];
+			}
+
+			if (ecat_flash_eeprom_write(word_address + offset, scratch) != 0) {
 				return false;
 			}
 		}
-
-		for (uint16_t i = 0; i < copy; ++i) {
-			scratch[i] = data[offset + i];
-		}
-
-		if (ecat_flash_eeprom_write(word_address + offset, scratch) != 0) {
-			return false;
-		}
+		return true;
 	}
-	return true;
-#else
-	(void)word_address;
-	(void)length;
-	return true;
-#endif
+	#else
+	{
+		(void)word_address;
+		(void)length;
+		return true;
+	}
+	#endif
 }
 
+/**
+ * @brief 让 ESC 重新装载 SII 内容
+ * @return true=成功
+ */
 bool EcatEscHpm::ReloadSii()
 {
 	if (!sii_ready_) {
 		return false;
 	}
 
-#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
-	ecat_eeprom_emulation_reload_response();
-	return true;
-#else
-	// 板载 EEPROM：ESC 自己完成重载
-	return true;
-#endif
+	#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+	{
+		ecat_eeprom_emulation_reload_response();
+		return true;
+	}
+	#else
+	{
+		// 板载 EEPROM：ESC 自己完成重载
+		return true;
+	}
+	#endif
 }
 
+/**
+ * @brief 把 SII 内容落盘
+ */
 void EcatEscHpm::StoreSii()
 {
 	if (!sii_ready_) {
 		return;
 	}
 
-#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
-	ecat_flash_eeprom_flush();
-#endif
+	#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+	{
+		ecat_flash_eeprom_flush();
+	}
+	#endif
 }
 
+/**
+ * @brief 关 ESC 中断
+ * @return 关闭前的使能状态，作为恢复 token
+ */
 uint32_t EcatEscHpm::MaskEvents()
 {
-	/*
-	 * 关 ESC 中断并把原状态作为 token 返回。
-	 * 旧的 `DISABLE_ESC_INT` 无返回值，嵌套就会在第一次恢复时
-	 * 提前把中断打开——这里保留 token 让调用方能正确还原。
-	 */
+	// 关中断，把原状态作为 token 返回，让嵌套调用能正确还原
 	const bool was_enabled = irq_enabled_;
 
 	hpm_esc_irq_enable(dev_, false);
@@ -446,6 +437,10 @@ uint32_t EcatEscHpm::MaskEvents()
 	return was_enabled ? 1U : 0U;
 }
 
+/**
+ * @brief 按 token 恢复 ESC 中断
+ * @param token MaskEvents 的返回值
+ */
 void EcatEscHpm::UnmaskEvents(uint32_t token)
 {
 	const bool enable = (token != 0U);
@@ -454,39 +449,5 @@ void EcatEscHpm::UnmaskEvents(uint32_t token)
 	irq_enabled_ = enable;
 }
 
-void EcatEscHpm::OnIrq(const struct device* dev, void* user_data)
-{
-	(void)dev;
-
-	if (g_instance == nullptr) {
-		return;
-	}
-
-	const uintptr_t irq_number = reinterpret_cast<uintptr_t>(user_data) & kIrqMask;
-
-	g_instance->Dispatch(MapIrq(static_cast<enum hpm_esc_irq>(irq_number)));
 }
 
-void EcatEscHpm::Dispatch(EcatEvent event)
-{
-	if (handler_ != nullptr) {
-		handler_(context_, event);
-	}
-}
-
-void EcatEscHpm::DispatchTick()
-{
-	Dispatch(EcatEvent::Tick1ms);
-}
-
-}
-
-/**
- * @brief 端口层诊断输出转发
- *
- * @param text 以 '\0' 结尾的字符串
- */
-void ecat_port_log(const char* text)
-{
-	shell::Log::SendCommandLine(text);
-}
