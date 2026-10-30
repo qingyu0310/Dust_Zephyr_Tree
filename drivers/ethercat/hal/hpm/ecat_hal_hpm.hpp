@@ -1,70 +1,108 @@
 /**
  * @file ecat_hal_hpm.hpp
  * @author qingyu
- * @brief HPMicro ESC 硬件抽象层
+ * @brief HPMicro ESC HAL：寄存器、DPRAM、事件、MDIO、SII
  * @version 0.1
- * @date 2026-10-29
+ * @date 2026-10-31
  *
- * 包装子树 hal/ports/ 下的 C 端口层，持有由 dts 决定的 EcatPhy* 数组。
- * 不含任何 PHY 芯片逻辑（那在 hal/ports/phy/<芯片名>/ 里按芯片分文件）。
+ * 一个平台一个文件，与 `drivers/usb/hal/hpm/usb_hal_hpm.hpp` 同构。
+ * 这是唯一允许 include 厂商头、调 `hpm_esc_*` 的地方；协议核心只通过
+ * `EcatEsc` 契约认识它。
  *
  * @copyright Copyright (c) 2026
  */
 
 #pragma once
 
-#include <stdint.h>
+#include <cstdint>
+#include <cstdio>
 
-#include "ecat_hal.hpp"
-#include "ecat_phy.hpp"
+#include "ecat_esc.hpp"
+
+struct device;
+
+extern "C" void ecat_port_log(const char* text);
 
 /**
- * @brief HPMicro EtherCAT 硬件抽象层
- *
- * 只做转发：把 EcatHal 的虚函数转到端口层的 C 函数。
- * PHY 配置与链路轮询遍历 phys_[]，不知道具体是哪颗芯片。
+ * @brief 格式化并输出一条诊断
  */
-class EcatHalHpm final : public EcatHal
+#define ECAT_LOG(...)												\
+	do {															\
+		char _ecat_text[160];										\
+		std::snprintf(_ecat_text, sizeof(_ecat_text), __VA_ARGS__);	\
+		ecat_port_log(_ecat_text);									\
+	} while (0)
+
+namespace ecat {
+
+/**
+ * @brief HPMicro ESC HAL
+ */
+class EcatEscHpm final : public ::EcatEsc
 {
 public:
-	EcatHalHpm() = default;
+	EcatEscHpm();
+	~EcatEscHpm() override;
 
-	bool Init(const Config& cfg, EventCallback callback, void* context) override;
-	bool Start() override;
-	void Stop() override;
+	EcatEscHpm(const EcatEscHpm&) = delete;
+	EcatEscHpm& operator=(const EcatEscHpm&) = delete;
 
-	void Read(uint16_t addr, void* buf, uint16_t len) override;
-	void Write(uint16_t addr, const void* buf, uint16_t len) override;
-	uint16_t AlEvent() override;
+	bool Open(const Config& config, EventHandler handler, void* context) override;
+	void Close() override;
+	void StartEvents() override;
+	void StopEvents() override;
+
+	void Read(uint16_t address, void* data, uint16_t length) override;
+	void Write(uint16_t address, const void* data, uint16_t length) override;
+	uint16_t ReadAlEvent() override;
 
 	bool MdioRead(uint8_t phy, uint8_t reg, uint16_t* value) override;
 	bool MdioWrite(uint8_t phy, uint8_t reg, uint16_t value) override;
 
-	void SetLink(uint8_t port, bool up) override;
-	void UpdateLink() override;
+	void SetLinkState(uint8_t port, bool up) override;
 
-	uint16_t EepromRead(uint32_t word_addr) override;
-	void     EepromWrite(uint32_t word_addr, uint16_t data) override;
-	uint32_t EepromReload() override;
+	SiiMode GetSiiMode() const override;
+	bool ReadSiiWord(uint32_t word_address, uint8_t* data, uint16_t length) override;
+	bool WriteSiiWord(uint32_t word_address, const uint8_t* data, uint16_t length) override;
+	bool ReloadSii() override;
+	void StoreSii() override;
 
-	uint32_t TimerGet() override;
-	void     TimerClear() override;
+	uint32_t MaskEvents() override;
+	void UnmaskEvents(uint32_t token) override;
 
-	void EnterCritical() override;
-	void LeaveCritical() override;
+	/**
+	 * @brief 1 ms 节拍转发
+	 *
+	 * 由静态定时器回调调用，需要是 public（定时器 thunk 在匿名命名空间里）。
+	 */
+	void DispatchTick();
 
 private:
-	/** 最多支持的 PHY 数（ESC 三端口） */
-	static constexpr uint8_t kMaxPorts = 3;
+	/**
+	 * @brief Zephyr 中断回调入口（静态 thunk）
+	 *
+	 * 设备驱动只给 `(dev, user_data)`，没有实例指针，所以 `user_data`
+	 * 存的是中断号，实例指针放在 `g_instance` 里。
+	 */
+	static void OnIrq(const struct device* dev, void* user_data);
 
-	EcatPhy*  phys_[kMaxPorts] = { nullptr, nullptr, nullptr };
-	PhyConfig phy_cfgs_[kMaxPorts] {};      // 从 dts 读出的每颗 PHY 参数
-	uint8_t   phy_count_ = 0;
-	bool      ready_ = false;
+	/**
+	 * @brief 硬件初始化：SII 介质、EEPROM 装载、PHY 复位与配置
+	 * @return true=成功
+	 */
+	bool HardwareInit();
 
-	/** 中断回调（由 ecat_irq_init 注册到端口层） */
-	static EventCallback irq_callback_;
-	static void*         irq_context_;
+	/**
+	 * @brief 把事件转发给上层
+	 */
+	void Dispatch(EcatEvent event);
 
-	static void OnPortIrq(void* context, EcatIrq irq);
+	const struct device* dev_ = nullptr;	// ESC 设备
+	EventHandler handler_ = nullptr;		// 事件回调
+	void* context_ = nullptr;				// 回调上下文
+	bool opened_ = false;					// 已打开
+	bool irq_enabled_ = false;				// 中断已使能
+	bool sii_ready_ = false;				// SII 介质已初始化
 };
+
+}
