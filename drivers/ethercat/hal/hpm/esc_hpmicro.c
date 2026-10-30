@@ -7,6 +7,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/irq.h>
+#include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
 #include <string.h>
 #include <zephyr/drivers/ethercat/hpm_esc.h>
@@ -14,6 +15,7 @@
 #include <hpm_soc.h>
 #include <hpm_clock_drv.h>
 #include <hpm_esc_drv.h>
+#include "ecat_zephyr_port.h"
 
 struct hpm_esc_config {
 	uintptr_t base;
@@ -128,6 +130,12 @@ static void esc_read_block(const struct device *dev, uint32_t offset, void *buf,
 	#endif
 }
 
+// 保存原有读取的结果，不额外访问 AL Control 或 AL Event。
+static volatile uint32_t s_control_reads;
+static volatile uint32_t s_control_value;
+static volatile uint32_t s_control_len;
+static volatile uint32_t s_control_events;
+
 static void esc_read(const struct device *dev, uint32_t offset, void *buf, size_t len)
 {
 	const struct hpm_esc_config *cfg = dev->config;
@@ -143,6 +151,20 @@ static void esc_read(const struct device *dev, uint32_t offset, void *buf, size_
 		memcpy(buf, &word, sizeof(word));
 	} else {
 		esc_read_block(dev, offset, buf, len);
+	}
+
+	if (offset == 0x0120U && len == 4U) {
+		uint32_t value;
+		memcpy(&value, buf, sizeof(value));
+		s_control_value = value;
+		s_control_len = len;
+		s_control_reads++;
+	} else if (offset == 0x0220U && len == 2U) {
+		uint16_t value;
+		memcpy(&value, buf, sizeof(value));
+		if ((value & 1U) != 0U) {
+			s_control_events++;
+		}
 	}
 }
 
@@ -189,12 +211,14 @@ static void esc_irq_enable(const struct device *dev, bool enable)
 {
 	const struct hpm_esc_config *cfg = dev->config;
 
-	for (size_t i = 0; i < HPM_ESC_IRQ_COUNT; i++) {
-		if (enable) {
-			irq_enable(cfg->irqs[i]);
-		} else {
-			irq_disable(cfg->irqs[i]);
-		}
+	/* 只使能 PDI 中断。
+	 * SYNC0/SYNC1 只有开 DC 同步才需要，现在是 SM-Synchron，使能它们会让 PLIC
+	 * 报一个没有实际事件的 IRQ（spurious）；RESET 中断的处置函数会复位整个 MCU，
+	 * 测试阶段绝不能开。 */
+	if (enable) {
+		irq_enable(cfg->irqs[HPM_ESC_IRQ_PDI]);
+	} else {
+		irq_disable(cfg->irqs[HPM_ESC_IRQ_PDI]);
 	}
 }
 
@@ -277,7 +301,8 @@ static void esc_configure_signals(const struct device *dev)
 
 static void esc_start(const struct device *dev)
 {
-	esc_enable_irq((ESC_Type *)esc_base(dev), esc_irq_mask_all);
+	/* 只用 PDI 中断（SM-Synchron）。SYNC0/SYNC1 属 DC 同步，RESET 会把 MCU 复位。 */
+	esc_enable_irq((ESC_Type *)esc_base(dev), esc_irq_mask_none);
 	esc_irq_enable(dev, true);
 }
 
@@ -313,13 +338,57 @@ static void esc_set_link_state_z(const struct device *dev, unsigned int port, bo
 	}
 }
 
+/* ISR 里不能打日志：ECAT_LOG 走 shell 的同步直发，在中断上下文会卡住/丢字。
+ * 这里只记计数和最后一次现场，由线程侧的 esc_isr_report() 打印。
+ *
+ * 注意：绝不读 AL_EVT_REQ(0x220)——该寄存器读取即清除，读了 PDI_Isr 就看不到事件，
+ * AL 状态机永远停在当前状态。只记无副作用的 AL_STAT / AL_STAT_CODE / GPR_CFG1。 */
+static volatile uint32_t s_isr_cnt[4];
+static volatile uint32_t s_isr_last[4][3];   /* 每路最后一次的 AL_STAT / AL_STAT_CODE / GPR_CFG1 */
+
 static void esc_isr(const void *arg, enum hpm_esc_irq irq)
 {
 	const struct device *dev = arg;
 	struct hpm_esc_data *data = dev->data;
+	ESC_Type *esc = (ESC_Type *)esc_base(dev);
+
+	s_isr_cnt[irq]++;
+	s_isr_last[irq][0] = esc->AL_STAT;
+	s_isr_last[irq][1] = esc->AL_STAT_CODE;
+	s_isr_last[irq][2] = esc->GPR_CFG1;
 
 	if (data->callbacks[irq] != NULL) {
 		data->callbacks[irq](dev, data->callback_data[irq]);
+	}
+}
+
+/**
+ * @brief 线程侧打印 ISR 现场（供 HAL 周期调用）
+ */
+void esc_isr_report(void)
+{
+	static int64_t next_access_report;
+	const int64_t now = k_uptime_get();
+	if (now >= next_access_report) {
+		next_access_report = now + 500;
+		const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(esc0));
+		const uintptr_t addr = esc_base(dev) + 0x0130U;
+		const uint16_t al16 = *(volatile uint16_t *)addr;
+		const uint32_t al32 = *(volatile uint32_t *)addr;
+		ECAT_LOG("ESC access: ctrl_n=%u ctrl=%08x len=%u event_n=%u al16=%04x al32=%08x\n",
+			(unsigned)s_control_reads, (unsigned)s_control_value,
+			(unsigned)s_control_len, (unsigned)s_control_events,
+			(unsigned)al16, (unsigned)al32);
+	}
+	for (unsigned int i = 0; i < 4U; i++) {
+		if (s_isr_cnt[i] == 0U) {
+			continue;
+		}
+		ECAT_LOG("ESC ISR irq=%u n=%u AL_STAT=0x%04x AL_STAT_CODE=0x%04x GPR_CFG1=0x%08x\n",
+			 i, (unsigned)s_isr_cnt[i],
+			 (unsigned)s_isr_last[i][0],
+			 (unsigned)s_isr_last[i][1],
+			 (unsigned)s_isr_last[i][2]);
 	}
 }
 

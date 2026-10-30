@@ -22,6 +22,9 @@
 
 extern "C" {
 #include <zephyr/drivers/ethercat/hpm_esc.h>
+
+/** 线程侧打印 ISR 现场（ISR 里不能打日志） */
+void esc_isr_report(void);
 }
 
 namespace
@@ -146,6 +149,9 @@ void EcatHalHpm::SetLink(uint8_t port, bool up)
 void EcatHalHpm::UpdateLink()
 {
 	static int prev[kMaxPorts] = { -1, -1, -1 };
+
+	/* 排查用：每 100ms 打一次 ISR 现场（中断里不能打日志） */
+	esc_isr_report();
 
 	for (uint8_t i = 0; i < phy_count_; i++) {
 		bool up = false;
