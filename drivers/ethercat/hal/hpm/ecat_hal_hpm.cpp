@@ -16,18 +16,23 @@
 #include <zephyr/kernel.h>
 
 #include "log.hpp"
+#include "spec/ecat_registers.hpp"
 
 extern "C" {
 
 #include <zephyr/drivers/ethercat/hpm_esc.h>
-#include "hpm_common.h"
-#include "ecat_config.h"
 
-#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+#if defined(CONFIG_DUST_ECAT_SII_FLASH)
 
-#include "ecat_e2p_emulation.h"
-#else
-hpm_stat_t esc_eeprom_content_init(void);		// 板载 EEPROM 模式的装载接口，由端口层提供
+#include "ecat_e2p_emulation.h"					// 只在 Flash 模拟模式下需要，该头非 C++ 友好
+
+#elif defined(CONFIG_DUST_ECAT_SII_EEPROM)
+
+#include "hpm_common.h"							// hpm_stat_t
+#include "ecat_config.h"						// ECAT_EEPROM_SIZE_BYTE
+#include "ecat_port_hw.h"						// init_esc_eeprom_pin()
+
+hpm_stat_t esc_eeprom_content_init(void);		// 板载 EEPROM 模式的装载接口
 
 #endif
 
@@ -69,6 +74,142 @@ K_TIMER_DEFINE(g_ms_timer, OnMillisecond, nullptr);
 }
 
 /**
+ * @brief 读 AL 事件寄存器
+ * @return AL 事件位图
+ */
+uint16_t EcatEscHpm::ReadAlEvent()
+{
+	uint16_t value = 0;
+
+	hpm_esc_read(dev_, reg::kAlEvent, &value, sizeof(value));
+	return value;
+}
+
+/**
+ * @brief 读 PHY 寄存器
+ * @param phy   PHY 地址
+ * @param reg   寄存器地址
+ * @param value 读出的值
+ * @return true=成功
+ */
+bool EcatEscHpm::MdioRead(uint8_t phy, uint8_t reg, uint16_t* value)
+{
+	return hpm_esc_mdio_read(dev_, phy, reg, value) == 0;
+}
+
+/**
+ * @brief 写 PHY 寄存器
+ * @param phy   PHY 地址
+ * @param reg   寄存器地址
+ * @param value 写入的值
+ * @return true=成功
+ */
+bool EcatEscHpm::MdioWrite(uint8_t phy, uint8_t reg, uint16_t value)
+{
+	return hpm_esc_mdio_write(dev_, phy, reg, value) == 0;
+}
+
+/**
+ * @brief 设置端口链路状态
+ * @param port 端口号
+ * @param up   true=链路建立
+ */
+void EcatEscHpm::SetLinkState(uint8_t port, bool up)
+{
+	hpm_esc_set_link_state(dev_, port, up);
+}
+
+/**
+ * @brief 取 SII 介质模式
+ * @return 由 DUST_ECAT_SII_FLASH 决定的介质
+ */
+EcatEscHpm::SiiMode EcatEscHpm::GetSiiMode() const
+{
+	#if defined(CONFIG_DUST_ECAT_SII_FLASH)
+	{
+		return SiiMode::Emulated;
+	}
+	#elif defined(CONFIG_DUST_ECAT_SII_EEPROM)
+	{
+		return SiiMode::OnBoard;
+	}
+	#endif
+
+	return SiiMode::OnBoard;		// 两个都没配时按板载 EEPROM 兜底
+}
+
+/**
+ * @brief 把 1 ms 节拍转发给上层
+ */
+void EcatEscHpm::DispatchTick()
+{
+	Dispatch(EcatEvent::Tick1ms);
+}
+
+/**
+ * @brief 把事件转发给上层回调
+ * @param event 事件源
+ */
+void EcatEscHpm::Dispatch(EcatEvent event)
+{
+	if (handler_ != nullptr) {
+		handler_(context_, event);
+	}
+}
+
+/**
+ * @brief 中断回调公共路径：按 user_data 取回实例再转发事件
+ * @param user_data 实例指针
+ * @param event     事件源
+ */
+void EcatEscHpm::DispatchThunk(void* user_data, EcatEvent event)
+{
+	if (user_data != nullptr) {
+		static_cast<EcatEscHpm*>(user_data)->Dispatch(event);
+	}
+}
+
+/**
+ * @brief PDI 中断
+ */
+void EcatEscHpm::OnPdiIrq(const device* dev, void* user_data)
+{
+	(void)dev;
+
+	DispatchThunk(user_data, EcatEvent::Pdi);
+}
+
+/**
+ * @brief SYNC0 中断
+ */
+void EcatEscHpm::OnSync0Irq(const device* dev, void* user_data)
+{
+	(void)dev;
+
+	DispatchThunk(user_data, EcatEvent::Sync0);
+}
+
+/**
+ * @brief SYNC1 中断
+ */
+void EcatEscHpm::OnSync1Irq(const device* dev, void* user_data)
+{
+	(void)dev;
+
+	DispatchThunk(user_data, EcatEvent::Sync1);
+}
+
+/**
+ * @brief RESET 中断
+ */
+void EcatEscHpm::OnResetIrq(const device* dev, void* user_data)
+{
+	(void)dev;
+
+	DispatchThunk(user_data, EcatEvent::Reset);
+}
+
+/**
  * @brief 打开 ESC 设备并完成硬件初始化
  * @param config  端口配置（当前未使用，SII 介质由编译期分支决定）
  * @param handler 事件回调
@@ -92,7 +233,7 @@ bool EcatEscHpm::Open(const Config& config, EventHandler handler, void* context)
 	// 顺序照已验证的参考实现：先关中断 → 挂四个回调 → 硬件初始化
 	hpm_esc_irq_enable(dev_, false);
 
-	hpm_esc_set_irq_callback(dev_, HPM_ESC_IRQ_PDI, OnPdiIrq, this);
+	hpm_esc_set_irq_callback(dev_, HPM_ESC_IRQ_PDI,   OnPdiIrq,   this);
 	hpm_esc_set_irq_callback(dev_, HPM_ESC_IRQ_SYNC0, OnSync0Irq, this);
 	hpm_esc_set_irq_callback(dev_, HPM_ESC_IRQ_SYNC1, OnSync1Irq, this);
 	hpm_esc_set_irq_callback(dev_, HPM_ESC_IRQ_RESET, OnResetIrq, this);
@@ -112,8 +253,8 @@ bool EcatEscHpm::Open(const Config& config, EventHandler handler, void* context)
  */
 bool EcatEscHpm::HardwareInit()
 {
-	// 两种 SII 介质在编译期分叉，GetSiiMode() 返回同一分支
-	#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+	// SII 介质由 DUST_ECAT_SII_FLASH 决定：开=Flash 分区模拟，关=板上 I2C EEPROM
+	#if defined(CONFIG_DUST_ECAT_SII_FLASH)
 	{
 		if (ecat_flash_eeprom_init() != 0) {
 			DUST_LOG_RAW("ecat: flash eeprom init failed");
@@ -121,9 +262,8 @@ bool EcatEscHpm::HardwareInit()
 		}
 
 		hpm_esc_configure_eeprom(dev_, true, false);
-		ecat_eeprom_emulation_reload_response();
 	}
-	#else
+	#elif defined(CONFIG_DUST_ECAT_SII_EEPROM)
 	{
 		if (esc_eeprom_content_init() != 0) {
 			DUST_LOG_RAW("ecat: i2c eeprom content init failed");
@@ -305,7 +445,14 @@ bool EcatEscHpm::ReadSiiWord(uint32_t word_address, uint8_t* data, uint16_t leng
 		return false;
 	}
 
-	#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+	#if defined(CONFIG_DUST_ECAT_SII_EEPROM)
+	{
+		// 板载 EEPROM：ESC 自己走 I2C 主控，应用层不需要参与
+		(void)word_address;
+		(void)length;
+		return true;
+	}
+	#elif defined(CONFIG_DUST_ECAT_SII_FLASH)
 	{
 		// 后端固定搬 kSiiChunkSize 字节，忽略请求长度；先搬到 scratch 再按请求长度拷出
 		for (uint16_t offset = 0; offset < length; offset = static_cast<uint16_t>(offset + kSiiChunkSize))
@@ -324,16 +471,10 @@ bool EcatEscHpm::ReadSiiWord(uint32_t word_address, uint8_t* data, uint16_t leng
 			}
 		}
 		return true;
-
-	}
-	#else
-	{
-		// 板载 EEPROM：ESC 自己走 I2C 主控，应用层不需要参与
-		(void)word_address;
-		(void)length;
-		return true;
 	}
 	#endif
+
+	return true;		// 两个都没配时按无需应用参与兜底
 }
 
 /**
@@ -349,7 +490,13 @@ bool EcatEscHpm::WriteSiiWord(uint32_t word_address, const uint8_t* data, uint16
 		return false;
 	}
 
-	#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+	#if defined(CONFIG_DUST_ECAT_SII_EEPROM)
+	{
+		(void)word_address;
+		(void)length;
+		return true;
+	}
+	#elif defined(CONFIG_DUST_ECAT_SII_FLASH)
 	{
 		// 后端固定写 kSiiChunkSize 字节；请求不足一块时先读出原值，只覆盖请求范围
 		for (uint16_t offset = 0; offset < length; offset = static_cast<uint16_t>(offset + kSiiChunkSize))
@@ -374,13 +521,9 @@ bool EcatEscHpm::WriteSiiWord(uint32_t word_address, const uint8_t* data, uint16
 		}
 		return true;
 	}
-	#else
-	{
-		(void)word_address;
-		(void)length;
-		return true;
-	}
 	#endif
+
+	return true;		// 两个都没配时按无需应用参与兜底
 }
 
 /**
@@ -393,17 +536,19 @@ bool EcatEscHpm::ReloadSii()
 		return false;
 	}
 
-	#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+	#if defined(CONFIG_DUST_ECAT_SII_FLASH)
 	{
-		ecat_eeprom_emulation_reload_response();
-		return true;
+		// Flash 模拟：从分区重新装载一遍内容
+		return ecat_flash_eeprom_init() == 0;
 	}
-	#else
+	#elif defined(CONFIG_DUST_ECAT_SII_EEPROM)
 	{
 		// 板载 EEPROM：ESC 自己完成重载
 		return true;
 	}
 	#endif
+
+	return true;		// 两个都没配时按无需应用参与兜底
 }
 
 /**
@@ -415,7 +560,7 @@ void EcatEscHpm::StoreSii()
 		return;
 	}
 
-	#if defined(CONFIG_HPM_ESC_EEPROM_EMULATION)
+	#if defined(CONFIG_DUST_ECAT_SII_FLASH)
 	{
 		ecat_flash_eeprom_flush();
 	}

@@ -31,35 +31,19 @@ config DUST_USB_DEVICE_HAL_STM32
 config DUST_ECAT_HAL_HPM
     bool "HPMicro ESC EtherCAT HAL"
     default n
-    depends on CLOCK_CONTROL && GPIO && PINCTRL
+    select CLOCK_CONTROL
+    select GPIO
+    select PINCTRL
     select HPM_ESC
     help
       HPMicro 片内 ESC 的 HAL 实现：EcatEsc 契约的厂商落地（含 SII 两种介质）。
       只提供底层 API 的隔离层，不含 PHY。
 
-# HPMicro 片内 ESC 设备驱动（esc_hpmicro.c）
-config HPM_ESC
-    bool "HPMicro on-chip EtherCAT slave controller"
-    default n
-    depends on DT_HAS_HPMICRO_HPM_ESC_ENABLED
-    help
-      HPMicro 片内 ESC 的 Zephyr 设备驱动：寄存器读写、MDIO、中断、PHY 复位、
-      EEPROM 模式配置。由 DUST_ECAT_HAL_HPM 或业务门禁 select。
-
-# SII 存储方式：true=Flash 分区模拟，false=板上 I2C EEPROM
-config HPM_ESC_EEPROM_EMULATION
-    bool "Use Flash-backed SII emulation instead of on-board I2C EEPROM"
-    depends on HPM_ESC
-    default n
-    help
-      true  = SII 存到 Flash 分区 ethercat_eeprom_partition（板上无 EEPROM 时用）
-      false = 用板上 I2C EEPROM（如 CAT24C128），需要 I2C 驱动与 ESC 的 SDA/SCL 引脚
-
 # fatal 异常栈帧转储（芯片相关，2026-10-20）
 config DUST_FATAL_ESF_HPM
     bool "HPM RISC-V esf dump"
     default n
-    depends on RISCV
+    select RISCV
     help
       RISC-V 异常栈帧转储：mcause / mtval / mepc / mstatus / ra / a0 / a1。
       fatal.cpp 内提供 __weak 空实现，未开启时链接不报错。
@@ -67,7 +51,7 @@ config DUST_FATAL_ESF_HPM
 config DUST_FATAL_ESF_STM32
     bool "STM32 Cortex-M esf dump"
     default n
-    depends on CPU_CORTEX_M
+    select CPU_CORTEX_M
     help
       Cortex-M 异常栈帧转储：pc / xpsr / lr。
       fatal.cpp 内提供 __weak 空实现，未开启时链接不报错。
