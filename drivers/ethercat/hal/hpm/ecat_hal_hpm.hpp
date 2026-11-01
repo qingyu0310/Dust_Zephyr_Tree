@@ -41,6 +41,7 @@ public:
 
 	bool MdioRead(uint8_t phy, uint8_t reg, uint16_t* value) override;
 	bool MdioWrite(uint8_t phy, uint8_t reg, uint16_t value) override;
+	uint8_t GetPhyAddress(uint8_t port) const override;
 	void SetLinkState(uint8_t port, bool up) override;
 
 	SiiMode GetSiiMode() const override;

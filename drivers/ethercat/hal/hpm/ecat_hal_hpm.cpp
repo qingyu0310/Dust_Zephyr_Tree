@@ -24,7 +24,16 @@ extern "C" {
 
 #if defined(CONFIG_DUST_ECAT_SII_FLASH)
 
-#include "ecat_e2p_emulation.h"					// 只在 Flash 模拟模式下需要，该头非 C++ 友好
+// ecat_e2p_emulation.h 会带进 HPM SDK 的 eeprom_emulation.h，
+// 那里的宏用 C 的字符串拼接写法（"..."fmt"..."），C++11 下报错。
+// 这里只声明用到的几个函数，避开整条 C 头链。
+#include "hpm_common.h"							// hpm_stat_t
+
+hpm_stat_t ecat_flash_eeprom_init(void);
+hpm_stat_t ecat_flash_eeprom_read(uint32_t addr, uint8_t *data);
+hpm_stat_t ecat_flash_eeprom_write(uint32_t addr, uint8_t *data);
+void       ecat_flash_eeprom_flush(void);
+void       ecat_eeprom_emulation_reload_response(void);
 
 #elif defined(CONFIG_DUST_ECAT_SII_EEPROM)
 
@@ -51,6 +60,7 @@ namespace ecat {
 
 namespace {
 
+constexpr uint16_t kSiiWordSize  = 2;		// SII 字宽：一个字 = 2 字节
 constexpr uint16_t kSiiChunkSize = 8;		// SII 每次搬运的字节数（Flash 模拟的最小擦写单位）
 
 /**
@@ -107,6 +117,29 @@ bool EcatEscHpm::MdioRead(uint8_t phy, uint8_t reg, uint16_t* value)
 bool EcatEscHpm::MdioWrite(uint8_t phy, uint8_t reg, uint16_t value)
 {
 	return hpm_esc_mdio_write(dev_, phy, reg, value) == 0;
+}
+
+/**
+ * @brief 读端口 PHY 的 MDIO 地址
+ *
+ * 地址来自板级 dts 的 `phy-addresses`；属性缺省时退化为端口号。
+ *
+ * @param port 端口号
+ * @return MDIO 地址
+ */
+uint8_t EcatEscHpm::GetPhyAddress(uint8_t port) const
+{
+	#if DT_NODE_HAS_PROP(DT_NODELABEL(esc0), phy_addresses)
+	{
+		static constexpr uint8_t kAddresses[] = DT_PROP(DT_NODELABEL(esc0), phy_addresses);
+
+		if (port < sizeof(kAddresses)) {
+			return kAddresses[port];
+		}
+	}
+	#endif
+
+	return port;
 }
 
 /**
@@ -262,6 +295,9 @@ bool EcatEscHpm::HardwareInit()
 		}
 
 		hpm_esc_configure_eeprom(dev_, true, false);
+
+		// ESC 进入模拟模式后会发 reload 请求，必须应答，否则下面的 check_eeprom 永远等不到 EPLC
+		ecat_eeprom_emulation_reload_response();
 	}
 	#elif defined(CONFIG_DUST_ECAT_SII_EEPROM)
 	{
@@ -279,7 +315,7 @@ bool EcatEscHpm::HardwareInit()
 
 	const int eeprom_status = hpm_esc_check_eeprom(dev_);
 
-	if (eeprom_status != 0) 
+	if (eeprom_status != 0)
 	{
 		if (eeprom_status == -EBADMSG) {
 			DUST_LOG_RAW("ecat: eeprom checksum error, communication still possible");
@@ -454,20 +490,20 @@ bool EcatEscHpm::ReadSiiWord(uint32_t word_address, uint8_t* data, uint16_t leng
 	}
 	#elif defined(CONFIG_DUST_ECAT_SII_FLASH)
 	{
-		// 后端固定搬 kSiiChunkSize 字节，忽略请求长度；先搬到 scratch 再按请求长度拷出
-		for (uint16_t offset = 0; offset < length; offset = static_cast<uint16_t>(offset + kSiiChunkSize))
+		// 后端每次搬一个字（2 字节），字节偏移按字地址换算
+		for (uint16_t offset = 0; offset < length; offset = static_cast<uint16_t>(offset + kSiiWordSize))
 		{
-			uint8_t scratch[kSiiChunkSize] = {};
+			uint8_t word[kSiiWordSize] = {};
 
-			if (ecat_flash_eeprom_read(word_address + offset, scratch) != 0) {
+			if (ecat_flash_eeprom_read(word_address + (offset / kSiiWordSize), word) != 0) {
 				return false;
 			}
 
 			const uint16_t remaining = static_cast<uint16_t>(length - offset);
-			const uint16_t copy = (remaining < kSiiChunkSize) ? remaining : kSiiChunkSize;
+			const uint16_t copy = (remaining < kSiiWordSize) ? remaining : kSiiWordSize;
 
 			for (uint16_t i = 0; i < copy; ++i) {
-				data[offset + i] = scratch[i];
+				data[offset + i] = word[i];
 			}
 		}
 		return true;
@@ -498,24 +534,18 @@ bool EcatEscHpm::WriteSiiWord(uint32_t word_address, const uint8_t* data, uint16
 	}
 	#elif defined(CONFIG_DUST_ECAT_SII_FLASH)
 	{
-		// 后端固定写 kSiiChunkSize 字节；请求不足一块时先读出原值，只覆盖请求范围
-		for (uint16_t offset = 0; offset < length; offset = static_cast<uint16_t>(offset + kSiiChunkSize))
+		// 后端每次写一个字（2 字节），字节偏移按字地址换算
+		for (uint16_t offset = 0; offset < length; offset = static_cast<uint16_t>(offset + kSiiWordSize))
 		{
-			uint8_t scratch[kSiiChunkSize] = {};
+			uint8_t word[kSiiWordSize] = {};
 			const uint16_t remaining = static_cast<uint16_t>(length - offset);
-			const uint16_t copy = (remaining < kSiiChunkSize) ? remaining : kSiiChunkSize;
-
-			if (copy < kSiiChunkSize) {
-				if (ecat_flash_eeprom_read(word_address + offset, scratch) != 0) {
-					return false;
-				}
-			}
+			const uint16_t copy = (remaining < kSiiWordSize) ? remaining : kSiiWordSize;
 
 			for (uint16_t i = 0; i < copy; ++i) {
-				scratch[i] = data[offset + i];
+				word[i] = data[offset + i];
 			}
 
-			if (ecat_flash_eeprom_write(word_address + offset, scratch) != 0) {
+			if (ecat_flash_eeprom_write(word_address + (offset / kSiiWordSize), word) != 0) {
 				return false;
 			}
 		}
