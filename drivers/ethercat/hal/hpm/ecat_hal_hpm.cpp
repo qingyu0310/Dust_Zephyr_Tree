@@ -56,9 +56,6 @@ extern "C" void ecat_port_log(const char* text)
 	DUST_LOG_RAW("%s", text);
 }
 
-extern "C" volatile uint32_t esc_probe_read_cycles;		// 厂商 C 侧探针：最近一次整字读的周期数
-extern "C" volatile uint32_t esc_probe_write_cycles;	// 厂商 C 侧探针：最近一次整字写的周期数
-
 namespace ecat {
 
 namespace {
@@ -180,17 +177,6 @@ EcatEscHpm::SiiMode EcatEscHpm::GetSiiMode() const
 void EcatEscHpm::DispatchTick()
 {
 	Dispatch(EcatEvent::Tick1ms);
-}
-
-/**
- * @brief 读取最近一次整字搬运的周期数
- * @param read_cycles  输出：读 PDRAM 的周期数
- * @param write_cycles 输出：写 PDRAM 的周期数
- */
-void EcatEscHpm::ProbeCycles(uint32_t* read_cycles, uint32_t* write_cycles) const
-{
-	*read_cycles  = esc_probe_read_cycles;
-	*write_cycles = esc_probe_write_cycles;
 }
 
 /**

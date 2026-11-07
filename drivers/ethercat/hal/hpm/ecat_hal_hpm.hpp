@@ -55,8 +55,6 @@ public:
 
 	void DispatchTick();											// 1 ms 节拍转发，供匿名命名空间的定时器 thunk 调用
 
-	void ProbeCycles(uint32_t* read_cycles, uint32_t* write_cycles) const;	// 最近一次整字搬运的周期数
-
 private:
 	static void OnPdiIrq  (const device* dev, void* user_data);		// Zephyr 中断回调，user_data 是实例
 	static void OnSync0Irq(const device* dev, void* user_data);
