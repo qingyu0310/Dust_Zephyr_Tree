@@ -3,8 +3,8 @@
 
 description: STM32 TIM quadrature encoder (user-layer driver, hardware encoder mode)
 
-# 只用来给 A/B 相引脚一个合法宿主：driver 不用 compatible 绑定，
-# TIM 实例由使用方在 Encoder::Config 里传（见 drivers/device/encoder）。
+# Zephyr 设备模型驱动的节点：TIM 实例取自父节点 reg，引脚取自本节点 pinctrl-0
+# （见 drivers/device/encoder）。
 compatible: "st,stm32-encoder"
 
 include: [base.yaml, pinctrl-device.yaml]
@@ -15,3 +15,33 @@ properties:
 
   pinctrl-names:
     required: true
+
+  st,counts-per-revolution:
+    type: int
+    required: true
+    description: |
+      编码器每圈脉冲数（A 相或 B 相单相脉冲）。硬件 X4 解码 → 实际计数 = 本值 × 4。
+
+  st,input-filter-level:
+    type: int
+    default: 1
+    enum:
+      - 0
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      - 13
+      - 14
+      - 15
+    description: |
+      输入滤波档位，映射见 zephyr/dts/bindings/sensor/st,stm32-qdec.yaml。
+      0 = 不滤波；1 = fCK_INT / N=2（当前代码用的 FDIV1_N2，保持一致）。

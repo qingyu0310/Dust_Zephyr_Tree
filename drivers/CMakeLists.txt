@@ -7,6 +7,16 @@ if(CONFIG_DUST_DEV_FSMC)
     )
 endif()
 
+# STM32 定时器编码器（TIM 编码器模式，硬件正交解码 X4，2026-11-12 从 gongxun 用户层下沉）
+if(CONFIG_DUST_ENCODER)
+    target_sources(app PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/encoder/encoder.c
+    )
+    target_include_directories(app PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/encoder
+    )
+endif()
+
 # USB 板卡底层 HAL（HPM EHCI，2026-08-09 下沉自 framework）
 if(CONFIG_DUST_USB_DEVICE_HAL_HPM)
     target_sources(app PRIVATE

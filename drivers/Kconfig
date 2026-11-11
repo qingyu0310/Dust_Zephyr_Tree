@@ -1,14 +1,32 @@
-config DUST_DEV_FSMC
+config DUST_FSMC
     bool "STM32 FSMC LCD controller (HX8357DN 8080)"
     default n
     help
       FSMC 底层设备驱动：读 lcd_fsmc 节点时序/背光属性，配置 Bank 寄存器。
 
-config DUST_DEV_FSMC_INIT_PRIORITY
+config DUST_FSMC_INIT_PRIORITY
     int "FSMC init priority"
     default 40
     help
       FSMC 设备初始化优先级（POST_KERNEL 阶段，需早于 LCD 业务线程）。
+
+# STM32 定时器编码器（2026-11-12 从 gongxun 用户层下沉）
+config DUST_ENCODER
+    bool "STM32 TIM encoder device"
+    default n
+    select CLOCK_CONTROL
+    select PINCTRL
+    select USE_STM32_LL_TIM
+    help
+      STM32 定时器编码器模式驱动：A/B 相接 TIM_CH1/CH2，硬件正交解码（X4），
+      提供累计计数、周期测速（计数/秒 + 圈/秒）与方向。
+      按 Zephyr 设备模型注册（DEVICE_DT_INST_DEFINE），TIM 实例取自父节点 reg。
+
+config DUST_ENCODER_INIT_PRIORITY
+    int "Encoder init priority"
+    default 40
+    help
+      编码器设备初始化优先级（POST_KERNEL 阶段，需早于电机业务线程）。
 
 # USB 板卡底层 HAL（2026-08-09 从 framework/drivers/communication/stream/usb 下沉）
 config DUST_USB_DEVICE_HAL_HPM
