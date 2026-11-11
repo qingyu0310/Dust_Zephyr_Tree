@@ -100,6 +100,6 @@ static int fsmc_init(const struct device *dev)
     PINCTRL_DT_INST_DEFINE(n);                                                               	\
     static const fsmc::Config fsmc_config_##n = FSMC_CONFIG_INIT(n);                         	\
     DEVICE_DT_INST_DEFINE(n, fsmc::fsmc_init, NULL, NULL, &fsmc_config_##n, POST_KERNEL,     	\
-                          CONFIG_DUST_DEV_FSMC_INIT_PRIORITY, NULL);
+                          CONFIG_DUST_FSMC_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(FSMC_DEVICE_DEFINE)
