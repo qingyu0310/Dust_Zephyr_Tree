@@ -1,19 +1,19 @@
 # zephyr_user 子树架构
 
-> 更新日期：2026-10-20
+> 更新日期：2026-11-12
 > 适用路径：`E:\Zephyr\zephyr_user`
-> 规模：6 个架构层 / 约 1.7 万行框架代码 / 4 块板卡 / 7 个工作区
+> 规模：三层（zephyr / midlayer / framework）/ 约 7.1 万行代码 / 4 块板卡 / 8 个工作区
 
 一套面向 RoboMaster 的 Zephyr 电控架构。
 
-**本文不是使用手册。** 使用看 [快速上手.md](快速上手.md)，线程细节看 [doc/线程编写指南.md](doc/线程编写指南.md)。本文讲的是：**这套架构为什么长成这样，每一处设计解决的是什么问题。**
+**本文不是使用手册。** 使用看 [快速上手.md](快速上手.md)。本文讲的是：**这套架构为什么长成这样，每一处设计解决的是什么问题。**
 
 ---
 
 ## 目录
 
 1. [设计目标](#1-设计目标)
-2. [六层分工与依赖方向](#2-六层分工与依赖方向)
+2. [三层分工与依赖方向](#2-三层分工与依赖方向)
 3. [编译期决定一切：Kconfig 门禁链](#3-编译期决定一切kconfig-门禁链)
 4. [启动层：注册式生命周期](#4-启动层注册式生命周期)
 5. [线程层：受管任务外壳](#5-线程层受管任务外壳)
@@ -53,18 +53,15 @@ CMakeLists 的 if(CONFIG_TRD_XXX)
 
 **为什么这么做**：嵌入式调试最痛苦的是"我明明写了为什么没跑"。这条链上任何一环断了，都能在编译期或链接期看到，不会拖到板子上。
 
-### 1.2 每一层都不需要知道相邻层是谁
+### 1.2 三层各自不需要知道相邻层是谁
 
 | 层 | 它认识谁 | 它**不认识**谁 |
 |---|---|---|
-| `algorithm` | 标准库 | Zephyr、任何设备 |
-| `drivers` | Zephyr device API | 业务 |
-| `modules` | drivers + topic | 谁在用它、什么时候启动 |
-| `topic` | 无 | 全部 |
-| `cmd` | drivers | 业务调度 |
-| `init` | cmd（日志/蜂鸣） | 有哪些业务线程 |
+| `zephyr/`（底层） | Zephyr / 厂商 SDK | 协议栈、业务 |
+| `midlayer/`（中间层） | 底层契约（`EcatEsc` / `UsbHal`） | 驱动、业务 |
+| `framework/`（上层） | 中间层门面 + 自己的驱动 | 协议栈内部、芯片寄存器 |
 
-**单向依赖**：`project/` → `framework/*`。任何反向引用都是 bug。
+**单向依赖**：`framework/` → `midlayer/` → `zephyr/contract/`。任何反向引用都是 bug。
 
 **具体体现**：
 
@@ -72,41 +69,82 @@ CMakeLists 的 if(CONFIG_TRD_XXX)
 - `ImuManager` 不知道后端芯片是 BMI088 还是 ICM42688P，它只拿到一个 `Source*`
 - `Remote` 不知道用户插的是 DR16 还是 SBUS，它自动探测
 - shell 不知道有哪些命令族，它遍历 `.shell_cmd` 段
-- `buzzer` / `flash` 不知道谁在调用，宏展开成空也能编译
+- `EthercatSlave` 不知道 ESC 是 HPM 还是别的芯片，它只拿到 `EcatEsc&`
+- `Usb` 不知道底层是 EHCI 还是 OTG FS，它只拿到 `UsbHal&`
 
 ---
 
-## 2. 六层分工与依赖方向
+## 2. 三层分工与依赖方向
+
+### 2.1 三层总览
 
 ```text
-framework/
+zephyr/          底层 —— 与芯片耦合
+├── boards/      板卡定义（board.yml / _defconfig / board.cmake）
+├── dts/         devicetree binding（自定义外设的 yaml）
+├── platform/    CMSIS 垫片
+├── contract/    共享契约：纯虚基类 + 纯数据类型（831 行，零厂商依赖）
+└── drivers/     Zephyr 模块式驱动：fsmc / encoder / usb hal / ecat hal / fatal esf
+
+midlayer/        中间层 —— 只有协议栈
+├── usb/core/        USB 枚举 / CDC / 描述符 / 端点（1398 行）
+└── ethercat/core/   AL 状态机 / 邮箱 / SDO / PDO（8252 行）
+
+framework/       上层 —— 业务架构 + 类驱动
+├── drivers/     类驱动：Stream / UartDma / Can / Spi / Usb 门面 / EthercatSlave 门面 / Gpio / Pwm
 ├── algorithm/   纯计算：PID / LQR / Kalman / EKF / 四元数 / ESO / RLS / 缓冲 / 定时器
-├── drivers/     通用外设封装：Stream / UartDma / Can / Spi / Usb / Gpio / Pwm / Rs485
 ├── modules/     设备能力：IMU（前后端） / Remote（协议探测） / 电机 / 功率计
 ├── topic/       跨线程数据契约：zbus 通道 / msgq
-├── cmd/         横切：shell(log/var/thread/boot) / buzzer / flash / fatal / 构建脚本
-└── init/        启动层：main + 注册表 + 阶段调度 + 线程模板
+├── cmd/         横切：buzzer / flash / fatal / 构建脚本
+├── shell/       调试台：log / var / thread / boot
+├── init/        启动层：main + 注册表 + 阶段调度 + 线程模板
+└── project/     维护者验证工程
 ```
 
 | 层 | 文件数 | 约行数 | 绝对不做的事 |
 |---|---|---|---|
-| `algorithm` | 19 | 3.8k | 不 include 任何 Zephyr 设备头，可在 PC 上单测 |
-| `drivers` | 27 | 3.7k | 不知道业务是什么 |
-| `modules` | 26 | 4.3k | 不接管线程生命周期（线程由 init 层拉起） |
-| `topic` | 6 | 0.2k | 不实现任何逻辑，只定义数据 |
-| `cmd` | 23 | 3.5k | 不参与业务调度 |
-| `init` | 10 | 1.2k | 不知道有哪些业务线程 |
+| `zephyr/` | 47 | 3.4k | 不含协议状态机、不含业务 |
+| `midlayer/` | 42 | 9.7k | 不含驱动、不含业务、不碰芯片寄存器 |
+| `framework/algorithm` | 19 | 3.9k | 不 include 任何 Zephyr 设备头，可在 PC 上单测 |
+| `framework/drivers` | 31 | 4.5k | 不知道业务是什么 |
+| `framework/modules` | 26 | 4.3k | 不接管线程生命周期（线程由 init 层拉起） |
+| `framework/topic` | 6 | 0.2k | 不实现任何逻辑，只定义数据 |
+| `framework/cmd` | 23 | 1.0k | 不参与业务调度 |
+| `framework/shell` | 25 | 3.2k | 不参与业务调度 |
+| `framework/init` | 10 | 1.5k | 不知道有哪些业务线程 |
 
-### 2.1 子树 `drivers/` ≠ 架构 `drivers/`
+### 2.2 判据：怎么判断一个文件该放哪层
 
-这是最容易混淆的一处：
+> **这一层是不是"与芯片耦合"？** 是 → `zephyr/`
+> **这一层有没有协议状态机？** 有 → `midlayer/`
+> **都不是** → `framework/`
 
-| | 位置 | 内容 | 谁来维护 |
-|---|---|---|---|
-| **架构 drivers** | `framework/drivers/` | 通用外设 **C++ 用法封装**（`Stream` / `Can` / `Spi` / `Pwm`） | 架构维护者 |
-| **子树 drivers** | `zephyr_user/drivers/` | 板卡专属 **Zephyr 模块式驱动**（`fsmc/` / `usb/hal/stm32/`），带 `module.yml` | 子树维护者 |
+| 对象 | 判据 | 归属 |
+|---|---|---|
+| `usb_hal_hpm.cpp` 写 `regs->ENDPTCTRL[0]` | 与芯片耦合 | `zephyr/drivers/` |
+| `ecat_hal_hpm.cpp` 调 `hpm_esc_read()` | 与芯片耦合 | `zephyr/drivers/` |
+| `usb/core/` 实现 USB 枚举状态机 | 有协议状态机 | `midlayer/` |
+| `ethercat/core/` 实现 AL 状态迁移 | 有协议状态机 | `midlayer/` |
+| `pwm.cpp` 只调 `pwm_set_dt()` | 既无耦合也无状态机 | `framework/drivers/` |
+| `uart.cpp` 只做 DMA 收发 | 既无耦合也无状态机 | `framework/drivers/` |
+| `can.cpp` 只调 `can_send()` | 既无耦合也无状态机 | `framework/drivers/` |
 
-区别在**层级**：子树 drivers 是 Zephyr 驱动框架的实现（注册到 `DEVICE_DT_DEFINE`），架构 drivers 是对这些设备的 C++ 使用封装。业务只碰架构 drivers。
+### 2.3 共享契约（`zephyr/contract/`）
+
+**底层实现必须满足的形状**。6 个纯虚基类 / 纯数据类型，831 行：
+
+| 文件 | 内容 |
+|---|---|
+| `usb_hal.hpp` | USB 硬件抽象（纯虚基类 `UsbHal`） |
+| `usb_types.hpp` | USB 数据类型 |
+| `ecat_esc.hpp` | ESC 能力契约（纯虚基类 `EcatEsc`） |
+| `ecat_types.hpp` | EtherCAT 数据类型 |
+| `ecat_profile.hpp` | PDO 布局描述 |
+| `esf_dump.hpp` | 异常栈帧转储接口 |
+
+**为什么在底层**：契约是"底层实现必须满足的形状"，不是"上层要用到的东西"。放在 `zephyr/` 下，底层 include 它就是内部引用，不是反向依赖。
+
+**唯一例外**：`esf_dump.hpp` 依赖 `<zephyr/kernel.h>`（要用 `struct arch_esf` 完整定义）。契约层约束的是"不绑厂商"，绑 Zephyr 内核类型是这套架构的既有前提。
 
 ---
 
@@ -158,7 +196,7 @@ config DUST_COM_SPI
 ### 3.3 CMake 条件编译
 
 ```cmake
-# project/thread/CMakeLists.txt
+# framework/project/thread/CMakeLists.txt
 if(CONFIG_TRD_IMU)
     target_sources(app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/imu/trd_imu.cpp)
     target_include_directories(app PRIVATE
@@ -1193,7 +1231,7 @@ ZBUS_OBS_DECLARE(sub_imu_to);
 ### 13.1 完整内容
 
 ```cpp
-// project/thread/imu/trd_imu.cpp —— 全部 33 行
+// framework/project/thread/imu/trd_imu.cpp —— 全部 33 行
 #include "imu.hpp"
 #include "Init_entry.hpp"
 
@@ -1241,7 +1279,7 @@ REGISTER_THREAD(thread_start, EarlyThread, HaltOnFail, "imu_start");
 ## 14. 为什么 `test` 线程是点睛之笔
 
 ```cpp
-// project/thread/test/trd_test.cpp
+// framework/project/thread/test/trd_test.cpp
 static Thread<2048> thread_ {};
 static float t_ = 0.0f;
 
@@ -1301,25 +1339,50 @@ bool thread_start()
 ## 15. 目录结构
 
 ```text
-zephyr_user/
-├── framework/          架构层（6 个独立 git 子模块，只读）
-│   ├── algorithm/      纯计算：PID / LQR / Kalman / EKF / 四元数 / ESO / RLS / 缓冲
-│   ├── drivers/        通用外设封装：Stream / UartDma / Can / Spi / Usb / Pwm / Rs485
-│   ├── modules/        设备能力：IMU（前后端） / Remote（协议探测） / 电机 / 功率计
-│   ├── topic/          数据契约：zbus 通道 / msgq
-│   ├── cmd/            横切 + shell + 构建脚本
-│   └── init/           启动层 + 线程模板
-├── drivers/            子树板卡底层（Zephyr 模块式：fsmc / USB HAL）
-├── boards/             用户自研板卡（stm32f407igh6 / stm32g431cbtx）
-├── dts/bindings/       自定义 devicetree binding
-├── platform/cmsis/     CMSIS 兼容垫片
-├── project/            维护者验证工程（gpio / imu / remote / test）
-└── doc/                架构、规划、调研文档
+zephyr_user/                        主仓库
+├── zephyr/                         底层：与芯片耦合（主仓库）
+│   ├── boards/                     用户自研板卡（stm32f407igh6 / stm32g431cbtx）
+│   ├── dts/bindings/               自定义 devicetree binding
+│   ├── platform/cmsis/             CMSIS 兼容垫片
+│   ├── contract/                   共享契约：6 个纯虚基类 / 数据类型（831 行）
+│   └── drivers/                    Zephyr 模块式驱动（fsmc / encoder / usb hal / ecat hal / fatal）
+│
+├── midlayer/                       中间层：只有协议栈（git 子模块）
+│   ├── usb/core/                   USB 枚举 / CDC / 描述符 / 端点
+│   ├── ethercat/core/              AL 状态机 / 邮箱 / SDO / PDO
+│   └── zephyr/                     module.yml + Kconfig
+│
+├── framework/                      上层：业务架构 + 类驱动
+│   ├── algorithm/                  纯计算（git 子模块）
+│   ├── drivers/                    类驱动 + 协议门面（git 子模块）
+│   ├── modules/                    设备能力（git 子模块）
+│   ├── topic/                      数据契约（git 子模块）
+│   ├── cmd/                        横切 + 构建脚本（git 子模块）
+│   ├── shell/                      调试台（git 子模块）
+│   ├── init/                       启动层 + 线程模板（git 子模块）
+│   ├── project/                    维护者验证工程（git 子模块）
+│   └── zephyr/                     module.yml + 聚合 Kconfig
+│
+└── doc/                            架构、规划、调研文档
 ```
+
+**9 个 git 子模块**：`framework/{algorithm,cmd,drivers,init,modules,project,shell,topic}` + `midlayer`。`zephyr/` 是主仓库的一部分。
+
+**三层各自自包含装配**：每层根 `CMakeLists.txt` 负责自己的子目录，`framework/project/CMakeLists.txt` 只写三行：
+
+```cmake
+add_subdirectory(${BOTTOM_ROOT}   ${CMAKE_CURRENT_BINARY_DIR}/bottom)
+add_subdirectory(${MIDLAYER_ROOT} ${CMAKE_CURRENT_BINARY_DIR}/midlayer)
+add_subdirectory(${FW_ROOT}       ${CMAKE_CURRENT_BINARY_DIR}/framework)
+```
+
+加模块只改本层根 CMakeLists，上层装配永远三行。
+
+> ⚠️ binary 目录名不能叫 `zephyr`——Zephyr 自己占用 `build/zephyr`。
 
 ### 15.1 用户区（`projects/<user>/`）
 
-用户区是**独立的 git 仓库**，结构**镜像**架构的六层：
+用户区是**独立的 git 仓库**，结构**镜像**上层 `framework/` 的六模块：
 
 ```text
 projects/qingyu/
@@ -1334,6 +1397,17 @@ projects/qingyu/
 
 **空目录会跳过**（CMake 用 `if(EXISTS)` 保护）。
 
+**用户区怎么拿到三层路径**（`project/CMakeLists.txt` 开头四行）：
+
+```cmake
+set(ZEPHYR_USER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../zephyr_user")
+set(FW_ROOT         "${ZEPHYR_USER_DIR}/framework")
+set(MIDLAYER_ROOT   "${ZEPHYR_USER_DIR}/midlayer")
+set(BOTTOM_ROOT     "${ZEPHYR_USER_DIR}/zephyr")   # 不可用 ZEPHYR_ROOT，与 CMake 保留变量冲突
+```
+
+然后装配三行（与主干 `framework/project/CMakeLists.txt` 完全一致）。
+
 **为什么镜像**：用户在需要时可以覆盖任何一层，不需要时直接留空——**不需要改架构层**。
 
 **依赖方向是单向的**：用户区 → zephyr_user，禁止用户之间互相依赖。
@@ -1345,10 +1419,10 @@ projects/qingyu/
 ### 四步
 
 ```text
-① project/Kconfig              加 TRD_XXX，select 所需的 DUST_* 符号
-② project/thread/CMakeLists    加 if(CONFIG_TRD_XXX) 块
-③ project/thread/xxx/trd_xxx.cpp   写 Task + thread_init + thread_start + 两个注册宏
-④ 板卡 .conf                   加 CONFIG_TRD_XXX=y
+① framework/project/Kconfig              加 TRD_XXX，select 所需的 DUST_* 符号
+② framework/project/thread/CMakeLists    加 if(CONFIG_TRD_XXX) 块
+③ framework/project/thread/xxx/trd_xxx.cpp   写 Task + thread_init + thread_start + 两个注册宏
+④ 板卡 .conf                             加 CONFIG_TRD_XXX=y
 ```
 
 ### 模板
@@ -1414,8 +1488,8 @@ REGISTER_THREAD(thread_start, EarlyThread, HaltOnFail, "xxx_start");
 ### 检查清单
 
 ```text
-[ ] project/Kconfig 有 TRD_XXX，select 了依赖的 DUST_* 符号
-[ ] project/thread/CMakeLists.txt 有 if(CONFIG_TRD_XXX) 块
+[ ] framework/project/Kconfig 有 TRD_XXX，select 了依赖的 DUST_* 符号
+[ ] framework/project/thread/CMakeLists.txt 有 if(CONFIG_TRD_XXX) 块
 [ ] trd_xxx.cpp 里有 REGISTER_INIT + REGISTER_THREAD
 [ ] REGISTER_INIT 六个参数齐全（rollback 可为 nullptr）
 [ ] REGISTER_THREAD 四个参数（fn / stage / fail / name）
@@ -1431,16 +1505,17 @@ REGISTER_THREAD(thread_start, EarlyThread, HaltOnFail, "xxx_start");
 ## 附：构建
 
 ```powershell
-dust build hpm5361icb        # 自动找 project/boards/*/hpm5361icb/*.overlay
-dust build puzhong
+dust build hpm5361icb        # 自动找 framework/project/boards/*/hpm5361icb/*.overlay
+dust build uhpm6e00evk
 dust flash                   # 定位项目根后透传 west flash
 ```
 
 直接用 `west`：
 
 ```powershell
+cd framework\project
 west build -b hpm5361icb -- -DBOARD_CFG=hpm5361icb
-west build -b stm32f407igh6 -- -DBOARD_CFG=puzhong
+west build -b uhpm6e00evk -- -DBOARD_CFG=uhpm6e00evk
 ```
 
 ---
@@ -1448,10 +1523,10 @@ west build -b stm32f407igh6 -- -DBOARD_CFG=puzhong
 ## 附：推荐阅读顺序
 
 1. **本文** —— 先建立整体印象与设计意图
-2. [doc/线程编写指南.md](doc/线程编写指南.md) —— 线程从注册到运行的完整链路
-3. [快速上手.md](快速上手.md) —— 30 分钟跑起来
+2. [快速上手.md](快速上手.md) —— 30 分钟跑起来
+3. [子树架构介绍.md](子树架构介绍.md) —— 三层逐层展开
 4. `framework/init/README.md` + `ARCHITECTURE.md` —— 启动器细节
-5. `framework/cmd/shell/README.md` —— 调试台（log 分层 / var / thread / boot）
+5. `framework/shell/README.md` —— 调试台（log 分层 / var / thread / boot）
 6. `framework/drivers/ARCHITECTURE.md` —— Stream / UART DMA / CAN / SPI
-7. `framework/modules/ARCHITECTURE.md` —— IMU 前后端 / Remote 探测
-8. [子树架构介绍.md](子树架构介绍.md) —— 逐层展开
+7. `framework/modules/README.md` —— IMU 前后端 / Remote 探测
+8. `midlayer/ethercat/` + `midlayer/usb/` —— 协议栈
