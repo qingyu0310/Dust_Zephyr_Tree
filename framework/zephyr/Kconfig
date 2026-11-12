@@ -8,5 +8,5 @@ rsource "../modules/Kconfig"
 rsource "../topic/Kconfig"
 rsource "../cmd/Kconfig"
 rsource "../shell/Kconfig"
-rsource "../drivers/communication/stream/usb/Kconfig"
 # 注：init/ 无独立 Kconfig 且始终编译，不 rsource。
+# 注：USB 协议栈的 Kconfig 已随协议栈迁到 midlayer/zephyr/Kconfig（user_midlayer 模块）。

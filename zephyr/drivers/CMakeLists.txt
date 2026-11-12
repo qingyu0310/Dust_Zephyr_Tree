@@ -25,7 +25,7 @@ if(CONFIG_DUST_USB_DEVICE_HAL_HPM)
         ${SDK_GLUE_DIR}/../sdk_env/hpm_sdk/drivers/src/hpm_usb_drv.c)
     target_include_directories(app PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/usb/hal/hpm
-        ${FW_ROOT}/drivers/communication/stream/usb/interface
+        ${CMAKE_CURRENT_SOURCE_DIR}/../contract
         ${SDK_GLUE_DIR}/../sdk_env/hpm_sdk/components/usb/device
         ${SDK_GLUE_DIR}/../sdk_env/hpm_sdk/drivers/inc)
 endif()
@@ -36,7 +36,7 @@ if(CONFIG_DUST_USB_DEVICE_HAL_STM32)
         ${CMAKE_CURRENT_SOURCE_DIR}/usb/hal/stm32/usb_hal_stm32.cpp)
     target_include_directories(app PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/usb/hal/stm32
-        ${FW_ROOT}/drivers/communication/stream/usb/interface)
+        ${CMAKE_CURRENT_SOURCE_DIR}/../contract)
 endif()
 
 # EtherCAT ESC HAL（唯一允许调厂商 API 的层）
@@ -51,8 +51,8 @@ if(CONFIG_DUST_ECAT_HAL_HPM)
 
     target_include_directories(app PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/ethercat/hal/hpm
-        ${FW_ROOT}/drivers/communication/ethercat/interface
-        ${FW_ROOT}/drivers/communication/ethercat/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/../contract
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../midlayer/ethercat/core
         ${SDK_GLUE_USER_DIR}/drivers/ethercat
         ${SDK_GLUE_USER_DIR}/drivers/ethercat/include
         ${HPM_SDK_DIR}/components/eeprom_emulation
