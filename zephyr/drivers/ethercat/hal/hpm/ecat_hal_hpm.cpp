@@ -22,7 +22,11 @@ extern "C" {
 
 #include <zephyr/drivers/ethercat/hpm_esc.h>
 
-#if defined(CONFIG_DUST_ECAT_SII_FLASH)
+#if defined(CONFIG_DUST_ECAT_SII_FLASH_READONLY)
+
+#include "ecat_sii_readonly.h"
+
+#elif defined(CONFIG_DUST_ECAT_SII_FLASH)
 
 // ecat_e2p_emulation.h 会带进 HPM SDK 的 eeprom_emulation.h，
 // 那里的宏用 C 的字符串拼接写法（"..."fmt"..."），C++11 下报错。
@@ -158,7 +162,7 @@ void EcatEscHpm::SetLinkState(uint8_t port, bool up)
  */
 EcatEscHpm::SiiMode EcatEscHpm::GetSiiMode() const
 {
-	#if defined(CONFIG_DUST_ECAT_SII_FLASH)
+	#if defined(CONFIG_DUST_ECAT_SII_FLASH) || defined(CONFIG_DUST_ECAT_SII_FLASH_READONLY)
 	{
 		return SiiMode::Emulated;
 	}
@@ -286,8 +290,13 @@ bool EcatEscHpm::Open(const Config& config, EventHandler handler, void* context)
  */
 bool EcatEscHpm::HardwareInit()
 {
-	// SII 介质由 DUST_ECAT_SII_FLASH 决定：开=Flash 分区模拟，关=板上 I2C EEPROM
-	#if defined(CONFIG_DUST_ECAT_SII_FLASH)
+	// SII 介质：固件只读镜像、Flash 分区模拟或板上 I2C EEPROM。
+	#if defined(CONFIG_DUST_ECAT_SII_FLASH_READONLY)
+	{
+		hpm_esc_configure_eeprom(dev_, true, false);
+		ecat_sii_readonly_reload_response();
+	}
+	#elif defined(CONFIG_DUST_ECAT_SII_FLASH)
 	{
 		if (ecat_flash_eeprom_init() != 0) {
 			DUST_LOG_RAW("ecat: flash eeprom init failed");
@@ -481,7 +490,11 @@ bool EcatEscHpm::ReadSiiWord(uint32_t word_address, uint8_t* data, uint16_t leng
 		return false;
 	}
 
-	#if defined(CONFIG_DUST_ECAT_SII_EEPROM)
+	#if defined(CONFIG_DUST_ECAT_SII_FLASH_READONLY)
+	{
+		return ecat_sii_readonly_read(word_address, data, length);
+	}
+	#elif defined(CONFIG_DUST_ECAT_SII_EEPROM)
 	{
 		// 板载 EEPROM：ESC 自己走 I2C 主控，应用层不需要参与
 		(void)word_address;
@@ -526,7 +539,13 @@ bool EcatEscHpm::WriteSiiWord(uint32_t word_address, const uint8_t* data, uint16
 		return false;
 	}
 
-	#if defined(CONFIG_DUST_ECAT_SII_EEPROM)
+	#if defined(CONFIG_DUST_ECAT_SII_FLASH_READONLY)
+	{
+		(void)word_address;
+		(void)length;
+		return false; // 只读 SII：由协议栈向主站返回写入失败。
+	}
+	#elif defined(CONFIG_DUST_ECAT_SII_EEPROM)
 	{
 		(void)word_address;
 		(void)length;
@@ -566,7 +585,11 @@ bool EcatEscHpm::ReloadSii()
 		return false;
 	}
 
-	#if defined(CONFIG_DUST_ECAT_SII_FLASH)
+	#if defined(CONFIG_DUST_ECAT_SII_FLASH_READONLY)
+	{
+		return true;
+	}
+	#elif defined(CONFIG_DUST_ECAT_SII_FLASH)
 	{
 		// Flash 模拟：从分区重新装载一遍内容
 		return ecat_flash_eeprom_init() == 0;
